@@ -1,0 +1,29 @@
+# Binaries
+/atlaskb
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test
+*.test
+*.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (may contain secrets)
+.atlaskb/
+
+# Build
+dist/
+bin/
