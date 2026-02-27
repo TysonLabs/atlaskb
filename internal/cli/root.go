@@ -41,6 +41,10 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("connecting to database: %w", err)
 		}
 
+		if err := db.RunMigrations(cfg.Database.DSN()); err != nil {
+			return fmt.Errorf("running migrations: %w", err)
+		}
+
 		return nil
 	},
 	PersistentPostRun: func(cmd *cobra.Command, args []string) {

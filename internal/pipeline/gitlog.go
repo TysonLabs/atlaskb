@@ -30,21 +30,30 @@ func RunGitLogAnalysis(ctx context.Context, cfg GitLogConfig) error {
 	// Check if already done
 	existing, _ := jobStore.GetByTarget(ctx, cfg.RepoID, models.PhaseGitLog, "git-history")
 	if existing != nil && existing.Status == models.JobCompleted {
+		fmt.Println("  Already completed, skipping.")
 		return nil
 	}
 
-	// Create job
-	job := &models.ExtractionJob{
-		RepoID: cfg.RepoID,
-		Phase:  models.PhaseGitLog,
-		Target: "git-history",
-		Status: models.JobPending,
+	// Reset failed job or create new one
+	if existing != nil && existing.Status == models.JobFailed {
+		jobStore.ResetFailed(ctx, cfg.RepoID, models.PhaseGitLog)
+	} else if existing == nil {
+		job := &models.ExtractionJob{
+			RepoID: cfg.RepoID,
+			Phase:  models.PhaseGitLog,
+			Target: "git-history",
+			Status: models.JobPending,
+		}
+		jobStore.Create(ctx, job)
 	}
-	jobStore.Create(ctx, job)
 
 	claimed, err := jobStore.ClaimNext(ctx, cfg.RepoID, models.PhaseGitLog)
-	if err != nil || claimed == nil {
+	if err != nil {
 		return fmt.Errorf("claiming git log job: %w", err)
+	}
+	if claimed == nil {
+		fmt.Println("  No claimable job found, skipping.")
+		return nil
 	}
 
 	// Parse git log
@@ -66,18 +75,34 @@ func RunGitLogAnalysis(ctx context.Context, cfg GitLogConfig) error {
 	}
 
 	prompt := GitLogPrompt(cfg.RepoName, sb.String())
-	resp, err := cfg.LLM.Complete(ctx, cfg.Model, systemPromptGitLog, []llm.Message{
-		{Role: "user", Content: prompt},
-	}, 4096)
-	if err != nil {
-		jobStore.Fail(ctx, claimed.ID, err.Error())
-		return fmt.Errorf("LLM call: %w", err)
-	}
 
-	result, err := ParseGitLog(resp.Content)
-	if err != nil {
-		jobStore.Fail(ctx, claimed.ID, err.Error())
-		return fmt.Errorf("parsing git log result: %w", err)
+	var result *GitLogResult
+	var lastResp *llm.Response
+	const maxRetries = 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		resp, err := cfg.LLM.Complete(ctx, cfg.Model, systemPromptGitLog, []llm.Message{
+			{Role: "user", Content: prompt},
+		}, 4096)
+		if err != nil {
+			if attempt == maxRetries {
+				jobStore.Fail(ctx, claimed.ID, err.Error())
+				return fmt.Errorf("LLM call (attempt %d/%d): %w", attempt, maxRetries, err)
+			}
+			fmt.Printf("  Git log LLM attempt %d/%d failed: %v, retrying...\n", attempt, maxRetries, err)
+			continue
+		}
+
+		result, err = ParseGitLog(resp.Content)
+		if err != nil {
+			if attempt == maxRetries {
+				jobStore.Fail(ctx, claimed.ID, err.Error())
+				return fmt.Errorf("parsing git log result (attempt %d/%d): %w", attempt, maxRetries, err)
+			}
+			fmt.Printf("  Git log parse attempt %d/%d failed: %v, retrying...\n", attempt, maxRetries, err)
+			continue
+		}
+		lastResp = resp
+		break
 	}
 
 	// Store facts
@@ -93,7 +118,7 @@ func RunGitLogAnalysis(ctx context.Context, cfg GitLogConfig) error {
 				Kind:          models.EntityConcept,
 				Name:          cfg.RepoName,
 				QualifiedName: ef.EntityName,
-				Summary:       "Repository-level entity",
+				Summary:       models.Ptr("Repository-level entity"),
 			}
 			entityStore.Create(ctx, repoEntity)
 			entityID = repoEntity.ID
@@ -132,7 +157,7 @@ func RunGitLogAnalysis(ctx context.Context, cfg GitLogConfig) error {
 		decisionStore.Create(ctx, decision)
 	}
 
-	tokens := resp.InputTokens + resp.OutputTokens
-	costUSD := float64(resp.InputTokens)/1_000_000*SonnetInputPer1M + float64(resp.OutputTokens)/1_000_000*SonnetOutputPer1M
+	tokens := lastResp.InputTokens + lastResp.OutputTokens
+	costUSD := float64(lastResp.InputTokens)/1_000_000*SonnetInputPer1M + float64(lastResp.OutputTokens)/1_000_000*SonnetOutputPer1M
 	return jobStore.Complete(ctx, claimed.ID, tokens, costUSD)
 }

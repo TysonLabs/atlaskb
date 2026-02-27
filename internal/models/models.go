@@ -7,6 +7,9 @@ import (
 	"github.com/pgvector/pgvector-go"
 )
 
+// Ptr returns a pointer to the given value. Useful for setting nullable struct fields.
+func Ptr[T any](v T) *T { return &v }
+
 // Entity kinds
 const (
 	EntityModule   = "module"
@@ -86,10 +89,10 @@ const (
 type Repo struct {
 	ID            uuid.UUID  `json:"id"`
 	Name          string     `json:"name"`
-	RemoteURL     string     `json:"remote_url,omitempty"`
+	RemoteURL     *string    `json:"remote_url,omitempty"`
 	LocalPath     string     `json:"local_path"`
 	DefaultBranch string     `json:"default_branch"`
-	LastCommitSHA string     `json:"last_commit_sha,omitempty"`
+	LastCommitSHA *string    `json:"last_commit_sha,omitempty"`
 	LastIndexedAt *time.Time `json:"last_indexed_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
@@ -101,8 +104,8 @@ type Entity struct {
 	Kind          string    `json:"kind"`
 	Name          string    `json:"name"`
 	QualifiedName string    `json:"qualified_name"`
-	Path          string    `json:"path,omitempty"`
-	Summary       string    `json:"summary,omitempty"`
+	Path          *string   `json:"path,omitempty"`
+	Summary       *string   `json:"summary,omitempty"`
 	Capabilities  []string  `json:"capabilities,omitempty"`
 	Assumptions   []string  `json:"assumptions,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
@@ -159,7 +162,7 @@ type Relationship struct {
 	FromEntityID uuid.UUID    `json:"from_entity_id"`
 	ToEntityID   uuid.UUID    `json:"to_entity_id"`
 	Kind         string       `json:"kind"`
-	Description  string       `json:"description,omitempty"`
+	Description  *string      `json:"description,omitempty"`
 	Strength     string       `json:"strength"`
 	Provenance   []Provenance `json:"provenance"`
 	CreatedAt    time.Time    `json:"created_at"`
@@ -170,11 +173,11 @@ type ExtractionJob struct {
 	RepoID       uuid.UUID  `json:"repo_id"`
 	Phase        string     `json:"phase"`
 	Target       string     `json:"target"`
-	ContentHash  string     `json:"content_hash,omitempty"`
+	ContentHash  *string    `json:"content_hash,omitempty"`
 	Status       string     `json:"status"`
-	ErrorMessage string     `json:"error_message,omitempty"`
-	TokensUsed   int        `json:"tokens_used,omitempty"`
-	CostUSD      float64    `json:"cost_usd,omitempty"`
+	ErrorMessage *string    `json:"error_message,omitempty"`
+	TokensUsed   *int       `json:"tokens_used,omitempty"`
+	CostUSD      *float64   `json:"cost_usd,omitempty"`
 	StartedAt    *time.Time `json:"started_at,omitempty"`
 	CompletedAt  *time.Time `json:"completed_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`

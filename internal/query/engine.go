@@ -32,7 +32,7 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 	}
 
 	// Embed the question
-	vectors, err := e.Embedder.Embed(ctx, []string{question}, embeddings.ModelVoyageCode3)
+	vectors, err := e.Embedder.Embed(ctx, []string{question}, embeddings.DefaultModel)
 	if err != nil {
 		return nil, fmt.Errorf("embedding question: %w", err)
 	}

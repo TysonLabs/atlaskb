@@ -4,7 +4,11 @@ import "fmt"
 
 const systemPromptPhase2 = `You are a code analysis expert. You analyze source files and extract structured knowledge about the codebase.
 
-You MUST respond with valid JSON only — no markdown fences, no commentary outside the JSON.`
+CRITICAL RULES:
+- You MUST respond with valid JSON only — no markdown fences, no commentary outside the JSON.
+- You MUST fill in real values — NEVER use "..." or ellipsis as placeholder values.
+- Every string value must contain actual content extracted from the code.
+- If a file has no entities or facts to extract, use empty arrays [].`
 
 func Phase2Prompt(filePath, language, repoName string, stackInfo StackInfo, content string) string {
 	return fmt.Sprintf(`Analyze this file and extract structured knowledge.

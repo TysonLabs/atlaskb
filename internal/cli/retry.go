@@ -57,7 +57,10 @@ func runRetry(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Found %d failed jobs:\n", len(failed))
 	for _, j := range failed {
-		errMsg := j.ErrorMessage
+		errMsg := ""
+		if j.ErrorMessage != nil {
+			errMsg = *j.ErrorMessage
+		}
 		if len(errMsg) > 80 {
 			errMsg = errMsg[:80] + "..."
 		}

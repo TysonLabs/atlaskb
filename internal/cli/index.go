@@ -40,8 +40,8 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		concurrency = indexConcurrency
 	}
 
-	llmClient := llm.NewAnthropicClient(cfg.Anthropic.APIKey)
-	embedClient := embeddings.NewVoyageClient(cfg.Voyage.APIKey)
+	llmClient := llm.NewOpenAIClient(cfg.LLM.BaseURL, cfg.LLM.APIKey)
+	embedClient := embeddings.NewOpenAIClient(cfg.Embeddings.BaseURL, cfg.Embeddings.APIKey)
 
 	result, err := pipeline.Orchestrate(cmd.Context(), pipeline.OrchestratorConfig{
 		RepoPath:        repoPath,

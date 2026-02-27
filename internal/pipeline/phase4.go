@@ -28,21 +28,30 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 	// Check if already done
 	existing, _ := jobStore.GetByTarget(ctx, cfg.RepoID, models.PhasePhase4, "synthesis")
 	if existing != nil && existing.Status == models.JobCompleted {
+		fmt.Println("  Already completed, skipping.")
 		return nil
 	}
 
-	// Create job
-	job := &models.ExtractionJob{
-		RepoID: cfg.RepoID,
-		Phase:  models.PhasePhase4,
-		Target: "synthesis",
-		Status: models.JobPending,
+	// Reset failed job or create new one
+	if existing != nil && existing.Status == models.JobFailed {
+		jobStore.ResetFailed(ctx, cfg.RepoID, models.PhasePhase4)
+	} else if existing == nil {
+		job := &models.ExtractionJob{
+			RepoID: cfg.RepoID,
+			Phase:  models.PhasePhase4,
+			Target: "synthesis",
+			Status: models.JobPending,
+		}
+		jobStore.Create(ctx, job)
 	}
-	jobStore.Create(ctx, job)
 
 	claimed, err := jobStore.ClaimNext(ctx, cfg.RepoID, models.PhasePhase4)
-	if err != nil || claimed == nil {
+	if err != nil {
 		return fmt.Errorf("claiming phase 4 job: %w", err)
+	}
+	if claimed == nil {
+		fmt.Println("  No claimable job found, skipping.")
+		return nil
 	}
 
 	// Gather entities and facts for context
@@ -55,7 +64,11 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 	var sb strings.Builder
 	for _, e := range entities {
 		fmt.Fprintf(&sb, "## Entity: %s (kind: %s)\n", e.QualifiedName, e.Kind)
-		fmt.Fprintf(&sb, "Summary: %s\n", e.Summary)
+		summary := ""
+		if e.Summary != nil {
+			summary = *e.Summary
+		}
+		fmt.Fprintf(&sb, "Summary: %s\n", summary)
 		if len(e.Capabilities) > 0 {
 			fmt.Fprintf(&sb, "Capabilities: %s\n", strings.Join(e.Capabilities, ", "))
 		}
@@ -68,18 +81,34 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 	}
 
 	prompt := Phase4Prompt(cfg.RepoName, sb.String())
-	resp, err := cfg.LLM.Complete(ctx, cfg.Model, systemPromptPhase4, []llm.Message{
-		{Role: "user", Content: prompt},
-	}, 8192)
-	if err != nil {
-		jobStore.Fail(ctx, claimed.ID, err.Error())
-		return fmt.Errorf("LLM call: %w", err)
-	}
 
-	result, err := ParsePhase4(resp.Content)
-	if err != nil {
-		jobStore.Fail(ctx, claimed.ID, err.Error())
-		return fmt.Errorf("parsing phase 4 result: %w", err)
+	var result *Phase4Result
+	var lastResp *llm.Response
+	const maxRetries = 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		resp, err := cfg.LLM.Complete(ctx, cfg.Model, systemPromptPhase4, []llm.Message{
+			{Role: "user", Content: prompt},
+		}, 8192)
+		if err != nil {
+			if attempt == maxRetries {
+				jobStore.Fail(ctx, claimed.ID, err.Error())
+				return fmt.Errorf("LLM call (attempt %d/%d): %w", attempt, maxRetries, err)
+			}
+			fmt.Printf("  Phase 4 LLM attempt %d/%d failed: %v, retrying...\n", attempt, maxRetries, err)
+			continue
+		}
+
+		result, err = ParsePhase4(resp.Content)
+		if err != nil {
+			if attempt == maxRetries {
+				jobStore.Fail(ctx, claimed.ID, err.Error())
+				return fmt.Errorf("parsing phase 4 result (attempt %d/%d): %w", attempt, maxRetries, err)
+			}
+			fmt.Printf("  Phase 4 parse attempt %d/%d failed: %v, retrying...\n", attempt, maxRetries, err)
+			continue
+		}
+		lastResp = resp
+		break
 	}
 
 	// Store architectural pattern facts
@@ -92,7 +121,7 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 				Kind:          models.EntityConcept,
 				Name:          cfg.RepoName,
 				QualifiedName: cfg.RepoName,
-				Summary:       "Repository-level entity",
+				Summary:       models.Ptr("Repository-level entity"),
 			}
 			entityStore.Create(ctx, entity)
 		}
@@ -147,7 +176,7 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 			FromEntityID: fromEntity.ID,
 			ToEntityID:   toEntity.ID,
 			Kind:         er.Kind,
-			Description:  er.Description,
+			Description:  models.Ptr(er.Description),
 			Strength:     er.Strength,
 			Provenance: []models.Provenance{{
 				SourceType: "file",
@@ -158,7 +187,7 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 		relStore.Create(ctx, rel)
 	}
 
-	tokens := resp.InputTokens + resp.OutputTokens
-	costUSD := float64(resp.InputTokens)/1_000_000*OpusInputPer1M + float64(resp.OutputTokens)/1_000_000*OpusOutputPer1M
+	tokens := lastResp.InputTokens + lastResp.OutputTokens
+	costUSD := float64(lastResp.InputTokens)/1_000_000*OpusInputPer1M + float64(lastResp.OutputTokens)/1_000_000*OpusOutputPer1M
 	return jobStore.Complete(ctx, claimed.ID, tokens, costUSD)
 }

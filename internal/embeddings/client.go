@@ -7,8 +7,7 @@ type Client interface {
 }
 
 const (
-	ModelVoyageCode3  = "voyage-code-3"
-	ModelVoyage3Large = "voyage-3-large"
+	DefaultModel = "mxbai-embed-large-v1"
 
 	MaxBatchSize = 128
 )

@@ -7,28 +7,30 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
-const voyageURL = "https://api.voyageai.com/v1/embeddings"
-
-type VoyageClient struct {
-	apiKey string
-	http   *http.Client
+type OpenAIClient struct {
+	baseURL string
+	apiKey  string
+	http    *http.Client
 }
 
-func NewVoyageClient(apiKey string) *VoyageClient {
-	return &VoyageClient{
-		apiKey: apiKey,
-		http:   &http.Client{},
+func NewOpenAIClient(baseURL, apiKey string) *OpenAIClient {
+	baseURL = strings.TrimRight(baseURL, "/")
+	return &OpenAIClient{
+		baseURL: baseURL,
+		apiKey:  apiKey,
+		http:    &http.Client{},
 	}
 }
 
-type voyageRequest struct {
+type openAIEmbeddingRequest struct {
 	Input []string `json:"input"`
 	Model string   `json:"model"`
 }
 
-type voyageResponse struct {
+type openAIEmbeddingResponse struct {
 	Data []struct {
 		Embedding []float32 `json:"embedding"`
 		Index     int       `json:"index"`
@@ -38,14 +40,13 @@ type voyageResponse struct {
 	} `json:"usage"`
 }
 
-func (c *VoyageClient) Embed(ctx context.Context, texts []string, model string) ([][]float32, error) {
+func (c *OpenAIClient) Embed(ctx context.Context, texts []string, model string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
 
 	var allEmbeddings [][]float32
 
-	// Batch in chunks of MaxBatchSize
 	for i := 0; i < len(texts); i += MaxBatchSize {
 		end := i + MaxBatchSize
 		if end > len(texts) {
@@ -63,8 +64,8 @@ func (c *VoyageClient) Embed(ctx context.Context, texts []string, model string) 
 	return allEmbeddings, nil
 }
 
-func (c *VoyageClient) embedBatch(ctx context.Context, texts []string, model string) ([][]float32, error) {
-	reqBody := voyageRequest{
+func (c *OpenAIClient) embedBatch(ctx context.Context, texts []string, model string) ([][]float32, error) {
+	reqBody := openAIEmbeddingRequest{
 		Input: texts,
 		Model: model,
 	}
@@ -74,12 +75,15 @@ func (c *VoyageClient) embedBatch(ctx context.Context, texts []string, model str
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", voyageURL, bytes.NewReader(body))
+	url := c.baseURL + "/v1/embeddings"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -93,16 +97,16 @@ func (c *VoyageClient) embedBatch(ctx context.Context, texts []string, model str
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("voyage API error (status %d): %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("embeddings API error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
-	var voyageResp voyageResponse
-	if err := json.Unmarshal(respBody, &voyageResp); err != nil {
+	var embResp openAIEmbeddingResponse
+	if err := json.Unmarshal(respBody, &embResp); err != nil {
 		return nil, fmt.Errorf("unmarshaling response: %w", err)
 	}
 
 	embeddings := make([][]float32, len(texts))
-	for _, d := range voyageResp.Data {
+	for _, d := range embResp.Data {
 		embeddings[d.Index] = d.Embedding
 	}
 

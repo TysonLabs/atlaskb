@@ -73,7 +73,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	if repo == nil {
 		repo = &models.Repo{
 			Name:          repoName,
-			RemoteURL:     repoInfo.RemoteURL,
+			RemoteURL:     models.Ptr(repoInfo.RemoteURL),
 			LocalPath:     repoInfo.RootPath,
 			DefaultBranch: repoInfo.DefaultBranch,
 		}
@@ -169,7 +169,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		return result, nil
 	}
 
-	// Phase 5: Repo summary
+	// Phase 5: Repo summary (non-fatal — data is still queryable without it)
 	fmt.Println("Phase 5: Repository summary...")
 	if err := RunPhase5(ctx, Phase5Config{
 		RepoID:   repo.ID,
@@ -178,7 +178,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		Pool:     cfg.Pool,
 		LLM:      cfg.LLM,
 	}); err != nil {
-		return result, fmt.Errorf("phase 5: %w", err)
+		fmt.Printf("  Warning: phase 5 summary failed: %v\n", err)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -222,7 +222,7 @@ func generateEmbeddings(ctx context.Context, pool *pgxpool.Pool, embedder embedd
 		claims[i] = f.Claim
 	}
 
-	vectors, err := embedder.Embed(ctx, claims, embeddings.ModelVoyageCode3)
+	vectors, err := embedder.Embed(ctx, claims, embeddings.DefaultModel)
 	if err != nil {
 		return fmt.Errorf("embedding: %w", err)
 	}

@@ -55,7 +55,7 @@ func RunPhase2(ctx context.Context, cfg Phase2Config) (*Phase2Stats, error) {
 
 		// Check if file has changed
 		existing, _ := jobStore.GetByTarget(ctx, cfg.RepoID, models.PhasePhase2, fi.Path)
-		if existing != nil && existing.Status == models.JobCompleted && existing.ContentHash == hash {
+		if existing != nil && existing.Status == models.JobCompleted && existing.ContentHash != nil && *existing.ContentHash == hash {
 			stats.FilesSkipped++
 			continue
 		}
@@ -64,13 +64,18 @@ func RunPhase2(ctx context.Context, cfg Phase2Config) (*Phase2Stats, error) {
 			RepoID:      cfg.RepoID,
 			Phase:       models.PhasePhase2,
 			Target:      fi.Path,
-			ContentHash: hash,
+			ContentHash: &hash,
 			Status:      models.JobPending,
 		}
 		if err := jobStore.Create(ctx, job); err != nil {
 			logVerboseF("warn: creating job for %s: %v", fi.Path, err)
 		}
 	}
+
+	// Count total pending jobs for progress
+	counts, _ := jobStore.CountByStatus(ctx, cfg.RepoID, models.PhasePhase2)
+	totalJobs := counts["pending"]
+	processed := 0
 
 	// Process jobs with bounded concurrency
 	g, gctx := errgroup.WithContext(ctx)
@@ -86,12 +91,15 @@ func RunPhase2(ctx context.Context, cfg Phase2Config) (*Phase2Stats, error) {
 		}
 
 		g.Go(func() error {
+			fmt.Printf("  [%d/%d] Analyzing %s...\n", processed+1, totalJobs, job.Target)
 			err := processFile(gctx, cfg, job, entityStore, factStore, relStore, stats)
+			processed++
 			if err != nil {
 				jobStore.Fail(gctx, job.ID, err.Error())
-				logVerboseF("error processing %s: %v", job.Target, err)
+				fmt.Printf("  [%d/%d] FAILED %s: %v\n", processed, totalJobs, job.Target, err)
 				return nil // don't cancel other workers
 			}
+			fmt.Printf("  [%d/%d] Done %s\n", processed, totalJobs, job.Target)
 			return nil
 		})
 	}
@@ -127,7 +135,13 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 
 	result, err := ParsePhase2(resp.Content)
 	if err != nil {
-		return fmt.Errorf("parsing response: %w", err)
+		// Log first 200 chars of cleaned response for debugging
+		cleaned := CleanJSON(resp.Content)
+		preview := cleaned
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		return fmt.Errorf("parsing response: %w\n  raw preview: %s", err, preview)
 	}
 
 	// Store entities
@@ -138,8 +152,8 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 			Kind:          ext.Kind,
 			Name:          ext.Name,
 			QualifiedName: ext.QualifiedName,
-			Path:          job.Target,
-			Summary:       ext.Summary,
+			Path:          models.Ptr(job.Target),
+			Summary:       models.Ptr(ext.Summary),
 			Capabilities:  ext.Capabilities,
 			Assumptions:   ext.Assumptions,
 		}
@@ -211,7 +225,7 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 			FromEntityID: fromID,
 			ToEntityID:   toID,
 			Kind:         ext.Kind,
-			Description:  ext.Description,
+			Description:  models.Ptr(ext.Description),
 			Strength:     ext.Strength,
 			Provenance: []models.Provenance{{
 				SourceType: "file",

@@ -36,13 +36,13 @@ func (s *Synthesizer) Synthesize(ctx context.Context, question string, results [
 	for i, r := range results {
 		fmt.Fprintf(&sb, "### Fact %d\n", i+1)
 		fmt.Fprintf(&sb, "Entity: %s (%s)\n", r.Entity.QualifiedName, r.Entity.Kind)
-		if r.Entity.Path != "" {
-			fmt.Fprintf(&sb, "File: %s\n", r.Entity.Path)
+		if r.Entity.Path != nil && *r.Entity.Path != "" {
+			fmt.Fprintf(&sb, "File: %s\n", *r.Entity.Path)
 		}
 		fmt.Fprintf(&sb, "Claim: %s\n", r.Fact.Claim)
 		fmt.Fprintf(&sb, "Dimension: %s | Category: %s | Confidence: %s\n", r.Fact.Dimension, r.Fact.Category, r.Fact.Confidence)
-		if r.Entity.Summary != "" {
-			fmt.Fprintf(&sb, "Entity summary: %s\n", r.Entity.Summary)
+		if r.Entity.Summary != nil && *r.Entity.Summary != "" {
+			fmt.Fprintf(&sb, "Entity summary: %s\n", *r.Entity.Summary)
 		}
 		sb.WriteString("\n")
 	}

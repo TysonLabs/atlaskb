@@ -49,7 +49,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	embedClient := embeddings.NewVoyageClient(cfg.Voyage.APIKey)
+	embedClient := embeddings.NewOpenAIClient(cfg.Embeddings.BaseURL, cfg.Embeddings.APIKey)
 	engine := query.NewEngine(pool, embedClient)
 
 	logVerbose("Searching knowledge graph...")
@@ -65,7 +65,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	logVerbose("Found %d relevant facts, synthesizing answer...", len(results))
 
-	llmClient := llm.NewAnthropicClient(cfg.Anthropic.APIKey)
+	llmClient := llm.NewOpenAIClient(cfg.LLM.BaseURL, cfg.LLM.APIKey)
 	synth := query.NewSynthesizer(llmClient, cfg.Pipeline.ExtractionModel)
 
 	stream, err := synth.Synthesize(cmd.Context(), question, results)

@@ -14,8 +14,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Database.Port != 5432 {
 		t.Errorf("expected 5432, got %d", cfg.Database.Port)
 	}
-	if cfg.Pipeline.Concurrency != 4 {
-		t.Errorf("expected 4, got %d", cfg.Pipeline.Concurrency)
+	if cfg.Pipeline.Concurrency != 2 {
+		t.Errorf("expected 2, got %d", cfg.Pipeline.Concurrency)
 	}
 }
 
@@ -26,8 +26,7 @@ func TestSaveAndLoad(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Database.Host = "testhost"
 	cfg.Database.User = "testuser"
-	cfg.Anthropic.APIKey = "sk-ant-test"
-	cfg.Voyage.APIKey = "pa-test"
+	cfg.LLM.BaseURL = "http://myserver:1234"
 
 	if err := Save(cfg, path); err != nil {
 		t.Fatalf("save: %v", err)
@@ -41,8 +40,8 @@ func TestSaveAndLoad(t *testing.T) {
 	if loaded.Database.Host != "testhost" {
 		t.Errorf("expected testhost, got %s", loaded.Database.Host)
 	}
-	if loaded.Anthropic.APIKey != "sk-ant-test" {
-		t.Errorf("expected sk-ant-test, got %s", loaded.Anthropic.APIKey)
+	if loaded.LLM.BaseURL != "http://myserver:1234" {
+		t.Errorf("expected http://myserver:1234, got %s", loaded.LLM.BaseURL)
 	}
 }
 
@@ -79,8 +78,6 @@ func TestEnvOverrides(t *testing.T) {
 
 func TestValidate(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Anthropic.APIKey = "test"
-	cfg.Voyage.APIKey = "test"
 
 	if err := Validate(cfg); err != nil {
 		t.Errorf("expected valid config: %v", err)

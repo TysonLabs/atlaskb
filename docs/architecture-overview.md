@@ -38,7 +38,7 @@ High-level system architecture for AtlasKB.
                     │  └───────────┘ └───────────┘ └────────────────────┘ │
                     │                                                      │
                     │  ┌──────────────────────────────────────────────┐   │
-                    │  │         LLM Provider (Claude API)            │   │
+                    │  │     LLM Provider (Local OpenAI-Compatible)    │   │
                     │  └──────────────────────────────────────────────┘   │
                     └─────────────────────────┬────────────────────────────┘
                                               │
@@ -111,8 +111,8 @@ High-level system architecture for AtlasKB.
 |---|---|---|
 | Language | Go or Rust | Pipeline needs concurrency and performance for parallel LLM calls |
 | Database | PostgreSQL + pgvector | Single store for relational data and vectors, proven at scale |
-| LLM | Claude API | Best at code understanding and long-context analysis |
-| Embeddings | Voyage or OpenAI | High-quality embeddings for semantic retrieval |
+| LLM | Local OpenAI-compatible (qwen3.5-35b-a3b) | Local inference via LM Studio, no cloud API key needed |
+| Embeddings | Local OpenAI-compatible (mxbai-embed-large-v1) | High-quality embeddings via local server, no cloud API key needed |
 | MCP Server | TypeScript or Python | MCP SDK maturity, fast iteration on tool definitions |
 | Queue | PostgreSQL (LISTEN/NOTIFY) or Redis | Keep infra simple early, graduate to dedicated queue if needed |
 | GitHub | GitHub API v4 (GraphQL) | Efficient batch fetching of PRs, issues, comments |

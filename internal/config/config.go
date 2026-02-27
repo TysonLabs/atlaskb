@@ -14,10 +14,10 @@ const (
 )
 
 type Config struct {
-	Database  DatabaseConfig  `toml:"database"`
-	Anthropic AnthropicConfig `toml:"anthropic"`
-	Voyage    VoyageConfig    `toml:"voyage"`
-	Pipeline  PipelineConfig  `toml:"pipeline"`
+	Database   DatabaseConfig   `toml:"database"`
+	LLM        LLMConfig        `toml:"llm"`
+	Embeddings EmbeddingsConfig `toml:"embeddings"`
+	Pipeline   PipelineConfig   `toml:"pipeline"`
 }
 
 type DatabaseConfig struct {
@@ -34,12 +34,15 @@ func (d DatabaseConfig) DSN() string {
 		d.User, d.Password, d.Host, d.Port, d.DBName, d.SSLMode)
 }
 
-type AnthropicConfig struct {
-	APIKey string `toml:"api_key"`
+type LLMConfig struct {
+	BaseURL string `toml:"base_url"`
+	APIKey  string `toml:"api_key"`
 }
 
-type VoyageConfig struct {
-	APIKey string `toml:"api_key"`
+type EmbeddingsConfig struct {
+	BaseURL string `toml:"base_url"`
+	Model   string `toml:"model"`
+	APIKey  string `toml:"api_key"`
 }
 
 type PipelineConfig struct {
@@ -53,15 +56,22 @@ func DefaultConfig() Config {
 		Database: DatabaseConfig{
 			Host:    "localhost",
 			Port:    5432,
-			User:    "postgres",
-			Password: "",
+			User:     "atlaskb",
+			Password: "atlaskb",
 			DBName:  "atlaskb",
 			SSLMode: "disable",
 		},
+		LLM: LLMConfig{
+			BaseURL: "http://localhost:1234",
+		},
+		Embeddings: EmbeddingsConfig{
+			BaseURL: "http://localhost:1234",
+			Model:   "mxbai-embed-large-v1",
+		},
 		Pipeline: PipelineConfig{
-			Concurrency:     4,
-			ExtractionModel: "claude-sonnet-4-20250514",
-			SynthesisModel:  "claude-opus-4-20250514",
+			Concurrency:     2,
+			ExtractionModel: "qwen/qwen3.5-35b-a3b",
+			SynthesisModel:  "qwen/qwen3.5-35b-a3b",
 		},
 	}
 }
@@ -144,11 +154,11 @@ func Validate(cfg Config) error {
 	if cfg.Database.DBName == "" {
 		return fmt.Errorf("database name is required")
 	}
-	if cfg.Anthropic.APIKey == "" {
-		return fmt.Errorf("anthropic API key is required")
+	if cfg.LLM.BaseURL == "" {
+		return fmt.Errorf("LLM base URL is required")
 	}
-	if cfg.Voyage.APIKey == "" {
-		return fmt.Errorf("voyage API key is required")
+	if cfg.Embeddings.BaseURL == "" {
+		return fmt.Errorf("embeddings base URL is required")
 	}
 	if cfg.Pipeline.Concurrency < 1 {
 		return fmt.Errorf("pipeline concurrency must be at least 1")
@@ -169,10 +179,19 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("ATLASKB_DB_NAME"); v != "" {
 		cfg.Database.DBName = v
 	}
-	if v := os.Getenv("ATLASKB_ANTHROPIC_API_KEY"); v != "" {
-		cfg.Anthropic.APIKey = v
+	if v := os.Getenv("ATLASKB_LLM_URL"); v != "" {
+		cfg.LLM.BaseURL = v
 	}
-	if v := os.Getenv("ATLASKB_VOYAGE_API_KEY"); v != "" {
-		cfg.Voyage.APIKey = v
+	if v := os.Getenv("ATLASKB_LLM_API_KEY"); v != "" {
+		cfg.LLM.APIKey = v
+	}
+	if v := os.Getenv("ATLASKB_EMBEDDINGS_URL"); v != "" {
+		cfg.Embeddings.BaseURL = v
+	}
+	if v := os.Getenv("ATLASKB_EMBEDDINGS_MODEL"); v != "" {
+		cfg.Embeddings.Model = v
+	}
+	if v := os.Getenv("ATLASKB_EMBEDDINGS_API_KEY"); v != "" {
+		cfg.Embeddings.APIKey = v
 	}
 }

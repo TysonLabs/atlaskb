@@ -23,25 +23,19 @@ One database for everything:
 
 No separate graph database. No separate vector database. No separate message broker. Postgres handles all of it until scale proves otherwise.
 
-### LLM: Claude API (Anthropic)
+### LLM: Local OpenAI-Compatible Server (LM Studio)
 
-Best-in-class code understanding and long-context analysis. Model selection by phase:
+LLM inference runs locally via an OpenAI-compatible chat completions endpoint (e.g. LM Studio), same server as embeddings. No cloud API key required.
 
-| Phase | Model | Rationale |
-|---|---|---|
-| Phase 2: File Analysis | Sonnet | Bulk extraction — good quality at lower cost per file |
-| Phase 3: History Mining | Sonnet | Structured extraction from PRs/issues |
-| Phase 4: Cross-Module Synthesis | Opus | Requires reasoning across large context |
-| Phase 5: Repo Summary | Opus | Requires synthesizing the full picture |
-| Phase 6: Cross-Repo Linking | Opus | Requires understanding multiple systems |
-| Retrieval: Human Q&A | Sonnet | Fast response with grounded context |
+- **`qwen/qwen3.5-35b-a3b`** for both extraction and synthesis phases
+- Any OpenAI-compatible `/v1/chat/completions` endpoint can be used by configuring the base URL
 
-### Embeddings: Voyage AI
+### Embeddings: Local OpenAI-Compatible Server (LM Studio)
 
-Voyage's code-optimized models outperform alternatives on code retrieval benchmarks. Since the majority of facts are code-derived, this matters.
+Embeddings run locally via an OpenAI-compatible server (e.g. LM Studio), eliminating the need for a cloud API key.
 
-- **`voyage-code-3`** for code-heavy facts (extracted from source files)
-- **`voyage-3-large`** for natural language facts (extracted from PRs, issues, docs, decisions)
+- **`mxbai-embed-large-v1`** (1024 dimensions) for all facts — code and natural language
+- Any OpenAI-compatible embeddings endpoint can be used by configuring the base URL
 
 ### GitHub Integration: GraphQL API (v4)
 
