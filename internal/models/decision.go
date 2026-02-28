@@ -83,6 +83,37 @@ func (s *DecisionStore) DeleteByRepo(ctx context.Context, repoID uuid.UUID) erro
 	return nil
 }
 
+func (s *DecisionStore) ListByEntity(ctx context.Context, entityID uuid.UUID, limit int) ([]Decision, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT d.id, d.repo_id, d.summary, d.description, d.rationale, d.alternatives, d.tradeoffs, d.provenance, d.made_at, d.still_valid, d.created_at, d.updated_at
+		 FROM decisions d
+		 JOIN decision_entities de ON de.decision_id = d.id
+		 WHERE de.entity_id = $1
+		 ORDER BY d.created_at DESC LIMIT $2`, entityID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing decisions by entity: %w", err)
+	}
+	defer rows.Close()
+
+	var decisions []Decision
+	for rows.Next() {
+		var d Decision
+		var altJSON, provJSON []byte
+		if err := rows.Scan(&d.ID, &d.RepoID, &d.Summary, &d.Description, &d.Rationale, &altJSON, &d.Tradeoffs, &provJSON, &d.MadeAt, &d.StillValid, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning decision: %w", err)
+		}
+		if err := json.Unmarshal(altJSON, &d.Alternatives); err != nil {
+			return nil, fmt.Errorf("unmarshaling alternatives: %w", err)
+		}
+		if err := json.Unmarshal(provJSON, &d.Provenance); err != nil {
+			return nil, fmt.Errorf("unmarshaling provenance: %w", err)
+		}
+		decisions = append(decisions, d)
+	}
+	return decisions, nil
+}
+
 func (s *DecisionStore) ListByRepo(ctx context.Context, repoID uuid.UUID) ([]Decision, error) {
 	rows, err := s.Pool.Query(ctx,
 		`SELECT id, repo_id, summary, description, rationale, alternatives, tradeoffs, provenance, made_at, still_valid, created_at, updated_at

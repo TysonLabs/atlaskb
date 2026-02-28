@@ -199,6 +199,21 @@ func (s *EntityStore) CountWithRelationships(ctx context.Context, repoID uuid.UU
 	return count, nil
 }
 
+func (s *EntityStore) FindByPath(ctx context.Context, repoID uuid.UUID, path string) (*Entity, error) {
+	e := &Entity{}
+	err := s.Pool.QueryRow(ctx,
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		 FROM entities WHERE repo_id = $1 AND path = $2`, repoID, path,
+	).Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("finding entity by path: %w", err)
+	}
+	return e, nil
+}
+
 func (s *EntityStore) DeleteByRepo(ctx context.Context, repoID uuid.UUID) error {
 	_, err := s.Pool.Exec(ctx, `DELETE FROM entities WHERE repo_id = $1`, repoID)
 	if err != nil {

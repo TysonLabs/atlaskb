@@ -186,6 +186,33 @@ func (s *FactStore) CountByRepo(ctx context.Context, repoID uuid.UUID) (total in
 	return total, byDimension, nil
 }
 
+func (s *FactStore) ListByRepoAndCategory(ctx context.Context, repoID uuid.UUID, categories []string, limit int) ([]Fact, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT id, entity_id, repo_id, claim, dimension, category, confidence, provenance, superseded_by, created_at, updated_at
+		 FROM facts WHERE repo_id = $1 AND category = ANY($2)
+		 AND superseded_by IS NULL AND confidence != 'low'
+		 ORDER BY dimension LIMIT $3`, repoID, categories, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing facts by category: %w", err)
+	}
+	defer rows.Close()
+
+	var facts []Fact
+	for rows.Next() {
+		var f Fact
+		var provJSON []byte
+		if err := rows.Scan(&f.ID, &f.EntityID, &f.RepoID, &f.Claim, &f.Dimension, &f.Category, &f.Confidence, &provJSON, &f.SupersededBy, &f.CreatedAt, &f.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning fact: %w", err)
+		}
+		if err := json.Unmarshal(provJSON, &f.Provenance); err != nil {
+			return nil, fmt.Errorf("unmarshaling provenance: %w", err)
+		}
+		facts = append(facts, f)
+	}
+	return facts, nil
+}
+
 func (s *FactStore) DeleteByRepo(ctx context.Context, repoID uuid.UUID) error {
 	_, err := s.Pool.Exec(ctx, `DELETE FROM facts WHERE repo_id = $1`, repoID)
 	if err != nil {
