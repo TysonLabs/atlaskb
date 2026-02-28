@@ -31,10 +31,22 @@ func NewOpenAIClient(baseURL, apiKey string) *OpenAIClient {
 }
 
 type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	MaxTokens   int           `json:"max_tokens"`
-	Stream      bool          `json:"stream"`
+	Model          string          `json:"model"`
+	Messages       []chatMessage   `json:"messages"`
+	MaxTokens      int             `json:"max_tokens"`
+	Stream         bool            `json:"stream"`
+	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+}
+
+type responseFormat struct {
+	Type       string          `json:"type"`
+	JSONSchema *jsonSchemaSpec `json:"json_schema,omitempty"`
+}
+
+type jsonSchemaSpec struct {
+	Name   string          `json:"name"`
+	Strict string          `json:"strict"`
+	Schema json.RawMessage `json:"schema"`
 }
 
 type chatMessage struct {
@@ -89,12 +101,23 @@ func (c *OpenAIClient) newRequest(ctx context.Context, body []byte) (*http.Reque
 	return req, nil
 }
 
-func (c *OpenAIClient) Complete(ctx context.Context, model string, system string, messages []Message, maxTokens int) (*Response, error) {
+func (c *OpenAIClient) Complete(ctx context.Context, model string, system string, messages []Message, maxTokens int, schema *JSONSchema) (*Response, error) {
 	reqBody := chatRequest{
 		Model:     model,
 		Messages:  c.buildMessages(system, messages),
 		MaxTokens: maxTokens,
 		Stream:    false,
+	}
+
+	if schema != nil {
+		reqBody.ResponseFormat = &responseFormat{
+			Type: "json_schema",
+			JSONSchema: &jsonSchemaSpec{
+				Name:   schema.Name,
+				Strict: "true",
+				Schema: schema.Schema,
+			},
+		}
 	}
 
 	body, err := json.Marshal(reqBody)

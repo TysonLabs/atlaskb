@@ -53,17 +53,145 @@ Respond with JSON in this exact schema:
       "strength": "strong|moderate|weak"
     }
   ]
-}`, repoName, filePath, language, stackInfo.Languages, content)
+}
+
+ENTITY RULES:
+- Only create entities for EXPORTED/PUBLIC symbols. In Go, exported = starts with
+  uppercase letter. DO NOT create entities for unexported (lowercase) functions,
+  methods, constants, variables, or struct fields. Examples of what NOT to extract:
+  processLoop, dispatch, cleanup, generateID, eventPath, readEvent, calculateDelay,
+  worker, matchingHandlers, executeWithRetry, drainChannel, validateTopic.
+  These should be described as facts on their parent type, not as separate entities.
+- DO NOT create entities for individual method signatures inside an interface definition.
+  The interface itself is the entity — list its methods as capabilities on the interface entity
+  and add a fact for each method describing its contract.
+- Extract ALL exported methods on a CONCRETE type (struct), even simple pass-through/delegation methods.
+  A method like ` + "`func (s *FooService) GetByID(ctx, id) { return s.store.GetByID(ctx, id) }`" + `
+  IS an entity — it's part of the public API surface.
+- DO NOT create entities for variables declared in function bodies (e.g. local vars like
+  store, bus, svc, handler, server, logger in main() or init()). Only create entities for
+  package-level type declarations, exported functions, and type methods.
+- In a main.go or entry-point file, the only entity should be "main" itself. Express
+  the wiring and configuration as facts on the main entity, not as separate entities.
+- Use exact names from the source code. Never paraphrase or rename functions.
+- qualified_name must match the code exactly: "package::Type.Method" for methods,
+  "package::FunctionName" for top-level functions.
+- Express implementation details as facts on the parent entity.
+- Use consistent qualified_name: "package::Name" for Go, "module.Class" for Python.
+- If this file references an entity defined in another file, emit facts/relationships
+  using its qualified_name — do NOT re-declare the entity.
+
+FACT RULES:
+- Extract at least TWO facts per entity: one "what" (behavior/capability) and one
+  "how" (implementation detail, pattern used, or delegation strategy).
+- Extract a "why" fact per entity if rationale is apparent from comments or naming.
+- Flag tech debt (TODOs, FIXMEs, deprecated patterns, missing tests, hardcoded values)
+  as category "debt". Flag risks (security, scalability, missing validation) as "risk".
+- Every TODO, FIXME, and NOTE comment MUST become a fact with category "debt" or "risk".
+- Prefer specific claims over vague ones.
+
+## FEW-SHOT EXAMPLE
+
+Given this Go file:
+` + "```" + `
+package tasks
+
+type TaskStore interface {
+    GetTask(ctx context.Context, id string) (*Task, error)
+    ListTasks(ctx context.Context) ([]*Task, error)
+}
+
+type TaskHandler struct {
+    store TaskStore
+    logger *log.Logger
+}
+
+func NewTaskHandler(store TaskStore, logger *log.Logger) *TaskHandler {
+    return &TaskHandler{store: store, logger: logger}
+}
+
+func (h *TaskHandler) GetTask(ctx context.Context, id string) (*Task, error) {
+    return h.store.GetTask(ctx, id)
+}
+
+func (h *TaskHandler) ListTasks(ctx context.Context) ([]*Task, error) {
+    return h.store.ListTasks(ctx)
+}
+
+func (h *TaskHandler) DeleteTask(ctx context.Context, id string) error {
+    h.logger.Printf("deleting task %%s", id)
+    return h.store.Delete(ctx, id)
+}
+
+func sanitizeInput(s string) string {
+    return strings.TrimSpace(s)
+}
+` + "```" + `
+
+Perfect extraction:
+{
+  "file_summary": "Defines TaskHandler which implements task CRUD operations by delegating to a TaskStore interface.",
+  "entities": [
+    {"kind": "type", "name": "TaskStore", "qualified_name": "tasks::TaskStore", "summary": "Interface defining task storage operations", "capabilities": ["get task by ID", "list all tasks"], "assumptions": []},
+    {"kind": "type", "name": "TaskHandler", "qualified_name": "tasks::TaskHandler", "summary": "Handles task operations by delegating to a TaskStore", "capabilities": ["get task", "list tasks", "delete task with logging"], "assumptions": ["TaskStore implementation is injected at construction"]},
+    {"kind": "function", "name": "NewTaskHandler", "qualified_name": "tasks::NewTaskHandler", "summary": "Constructor for TaskHandler", "capabilities": ["create TaskHandler with store and logger"], "assumptions": []},
+    {"kind": "function", "name": "GetTask", "qualified_name": "tasks::TaskHandler.GetTask", "summary": "Returns a task by ID, delegating to the store", "capabilities": ["retrieve single task"], "assumptions": []},
+    {"kind": "function", "name": "ListTasks", "qualified_name": "tasks::TaskHandler.ListTasks", "summary": "Returns all tasks, delegating to the store", "capabilities": ["retrieve all tasks"], "assumptions": []},
+    {"kind": "function", "name": "DeleteTask", "qualified_name": "tasks::TaskHandler.DeleteTask", "summary": "Deletes a task by ID with logging", "capabilities": ["delete task", "log deletion"], "assumptions": []}
+  ],
+  "facts": [
+    {"entity_name": "tasks::TaskStore", "claim": "Defines two operations: GetTask (by ID) and ListTasks (all)", "dimension": "what", "category": "behavior", "confidence": "high"},
+    {"entity_name": "tasks::TaskStore", "claim": "Interface with no implementation in this file", "dimension": "how", "category": "pattern", "confidence": "high"},
+    {"entity_name": "tasks::TaskHandler", "claim": "Handles task CRUD by delegating to a TaskStore", "dimension": "what", "category": "behavior", "confidence": "high"},
+    {"entity_name": "tasks::TaskHandler", "claim": "Uses unexported helper sanitizeInput for input cleaning", "dimension": "how", "category": "behavior", "confidence": "medium"},
+    {"entity_name": "tasks::TaskHandler.GetTask", "claim": "Pure pass-through to store.GetTask with no additional logic", "dimension": "how", "category": "behavior", "confidence": "high"},
+    {"entity_name": "tasks::TaskHandler.GetTask", "claim": "Retrieves a single task by its ID", "dimension": "what", "category": "behavior", "confidence": "high"},
+    {"entity_name": "tasks::TaskHandler.ListTasks", "claim": "Pure pass-through to store.ListTasks with no additional logic", "dimension": "how", "category": "behavior", "confidence": "high"},
+    {"entity_name": "tasks::TaskHandler.DeleteTask", "claim": "Logs deletion before delegating to store", "dimension": "how", "category": "behavior", "confidence": "high"},
+    {"entity_name": "tasks::TaskHandler.DeleteTask", "claim": "Only method that adds behavior (logging) beyond pure delegation", "dimension": "why", "category": "pattern", "confidence": "medium"}
+  ],
+  "relationships": [
+    {"from": "tasks::TaskHandler", "to": "tasks::TaskStore", "kind": "depends_on", "description": "TaskHandler delegates all storage operations to TaskStore", "strength": "strong"},
+    {"from": "tasks::NewTaskHandler", "to": "tasks::TaskHandler", "kind": "produces", "description": "Constructor that creates TaskHandler", "strength": "strong"},
+    {"from": "tasks::TaskHandler", "to": "tasks::TaskHandler.GetTask", "kind": "owns", "description": "GetTask is a method on TaskHandler", "strength": "strong"},
+    {"from": "tasks::TaskHandler", "to": "tasks::TaskHandler.ListTasks", "kind": "owns", "description": "ListTasks is a method on TaskHandler", "strength": "strong"},
+    {"from": "tasks::TaskHandler", "to": "tasks::TaskHandler.DeleteTask", "kind": "owns", "description": "DeleteTask is a method on TaskHandler", "strength": "strong"},
+    {"from": "tasks::TaskHandler.GetTask", "to": "tasks::TaskStore", "kind": "calls", "description": "Delegates to store.GetTask", "strength": "strong"},
+    {"from": "tasks::TaskHandler.DeleteTask", "to": "tasks::TaskStore", "kind": "calls", "description": "Delegates to store.Delete", "strength": "strong"}
+  ]
+}
+
+Note: sanitizeInput is unexported (lowercase) so it is NOT an entity — it's mentioned as a fact on TaskHandler instead. All exported methods including simple pass-throughs (GetTask, ListTasks) are extracted as entities. TaskStore is an interface so its methods are described as facts, not separate entities.
+
+CRITICAL: Each entity MUST have at least 2 facts AND at least 1 relationship. If you cannot think of 2 facts for an entity, you should not create the entity. Count your facts and relationships before finalizing.
+
+RELATIONSHIP RULES — EVERY entity MUST have at least 1 relationship:
+- METHODS: Always emit "owns" from the struct type to each method entity. This is the easiest
+  way to ensure every method has a relationship. Example: Handler → Handler.Publish (owns).
+- EMBEDDING: If a struct embeds another struct, emit "extends" from the embedding struct to the embedded struct.
+- INTERFACES: If a type implements an interface (has all its methods), emit "implements" from the concrete type to the interface.
+- TESTS: If a test function tests a specific entity, emit "tested_by" from the entity to the test function.
+  AND emit "calls" from the test function to the entity it tests.
+- CALLS: If a method calls another entity's method, emit "calls" from the caller to the callee.
+- CONSTRUCTORS: If a function is a constructor (returns a struct), emit "produces" from the function to the struct type.
+- TOP-LEVEL FUNCTIONS: Should have "calls" or "depends_on" relationships to the entities they use.
+- Count your relationships. If any entity has 0 relationships, add at least an "owns" or "calls" relationship.`, repoName, filePath, language, stackInfo.Languages, content)
 }
 
 const systemPromptPhase4 = `You are a software architect. You analyze entities and facts extracted from a codebase and synthesize cross-module insights about architecture, data flows, and contracts.
 
-You MUST respond with valid JSON only — no markdown fences, no commentary outside the JSON.`
+CRITICAL RULES:
+- You MUST respond with valid JSON only — no markdown fences, no commentary outside the JSON.
+- Your entire response must start with { and end with }.
+- Do NOT output "..." or ellipsis as values. Use real content or empty strings/arrays.
+- Do NOT include thinking, reasoning, or explanation text before or after the JSON.`
 
 func Phase4Prompt(repoName string, moduleSummaries string) string {
 	return fmt.Sprintf(`Analyze the following extracted entities and facts from the "%s" repository and synthesize cross-module insights.
 
 %s
+
+IMPORTANT: Use only entity qualified_names that exist in the provided context above. Do NOT invent or rename entities. If you need to reference an entity, copy its qualified_name exactly as shown.
 
 Respond with JSON in this exact schema:
 {
@@ -112,7 +240,11 @@ Respond with JSON in this exact schema:
 
 const systemPromptPhase5 = `You are a technical writer and software architect. You synthesize comprehensive repository summaries from extracted knowledge.
 
-You MUST respond with valid JSON only — no markdown fences, no commentary outside the JSON.`
+CRITICAL RULES:
+- You MUST respond with valid JSON only — no markdown fences, no commentary outside the JSON.
+- Your entire response must start with { and end with }.
+- Do NOT output "..." or ellipsis as values. Use real content or empty strings/arrays.
+- Do NOT include thinking, reasoning, or explanation text before or after the JSON.`
 
 func Phase5Prompt(repoName string, entitySummaries, architecturalFacts, decisions string) string {
 	return fmt.Sprintf(`Create a comprehensive summary of the "%s" repository based on the following extracted knowledge.
@@ -145,7 +277,11 @@ Respond with JSON in this exact schema:
 
 const systemPromptGitLog = `You are a code historian. You analyze git commit history to extract the "when" and "why" dimensions of a codebase's evolution.
 
-You MUST respond with valid JSON only — no markdown fences, no commentary outside the JSON.`
+CRITICAL RULES:
+- You MUST respond with valid JSON only — no markdown fences, no commentary outside the JSON.
+- Your entire response must start with { and end with }.
+- Do NOT output "..." or ellipsis as values. Use real content or empty strings/arrays.
+- Do NOT include thinking, reasoning, or explanation text before or after the JSON.`
 
 func GitLogPrompt(repoName string, commits string) string {
 	return fmt.Sprintf(`Analyze the following git history from the "%s" repository. Extract facts about the evolution, significant changes, and decision rationale visible in the commit history.
@@ -171,5 +307,15 @@ Respond with JSON in this exact schema:
       "made_at": "ISO timestamp if determinable"
     }
   ]
-}`, repoName, commits)
+}
+
+FACT RULES:
+- For entity_name, use the repository name "%s" if the fact is repo-level.
+- Do NOT invent entity names not present in the codebase. If unsure, use the repo name.
+
+DECISION RULES:
+- Commits that add/change dependencies, switch libraries, modify architecture,
+  or change configuration represent DECISIONS.
+- Infer rationale from change type and affected files even if message is terse.
+- Every repository should have decisions about tech stack, patterns, and structure.`, repoName, commits, repoName)
 }

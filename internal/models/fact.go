@@ -153,6 +153,39 @@ func (s *FactStore) SearchByVector(ctx context.Context, embedding pgvector.Vecto
 	return facts, nil
 }
 
+func (s *FactStore) SetSupersededBy(ctx context.Context, factID, supersededByID uuid.UUID) error {
+	_, err := s.Pool.Exec(ctx,
+		`UPDATE facts SET superseded_by = $2, updated_at = now() WHERE id = $1`,
+		factID, supersededByID,
+	)
+	if err != nil {
+		return fmt.Errorf("setting superseded_by: %w", err)
+	}
+	return nil
+}
+
+func (s *FactStore) CountByRepo(ctx context.Context, repoID uuid.UUID) (total int, byDimension map[string]int, err error) {
+	byDimension = make(map[string]int)
+	rows, err := s.Pool.Query(ctx,
+		`SELECT dimension, COUNT(*) FROM facts WHERE repo_id = $1 AND superseded_by IS NULL GROUP BY dimension`, repoID,
+	)
+	if err != nil {
+		return 0, nil, fmt.Errorf("counting facts: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var dim string
+		var count int
+		if err := rows.Scan(&dim, &count); err != nil {
+			return 0, nil, fmt.Errorf("scanning fact count: %w", err)
+		}
+		byDimension[dim] = count
+		total += count
+	}
+	return total, byDimension, nil
+}
+
 func (s *FactStore) DeleteByRepo(ctx context.Context, repoID uuid.UUID) error {
 	_, err := s.Pool.Exec(ctx, `DELETE FROM facts WHERE repo_id = $1`, repoID)
 	if err != nil {

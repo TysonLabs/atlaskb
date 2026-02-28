@@ -245,3 +245,42 @@ func ShouldAnalyze(fi FileInfo) bool {
 		return false
 	}
 }
+
+// manifestFiles are files already parsed deterministically by deps.go.
+// They produce poor LLM results and should skip Phase 2 analysis.
+var manifestFiles = map[string]bool{
+	"go.mod":          true,
+	"go.sum":          true,
+	"package.json":    true,
+	"package-lock.json": true,
+	"yarn.lock":       true,
+	"pnpm-lock.yaml":  true,
+	"requirements.txt": true,
+	"pyproject.toml":   true,
+	"cargo.toml":      true,
+	"cargo.lock":      true,
+	"gemfile":         true,
+	"gemfile.lock":    true,
+	"pom.xml":         true,
+	"build.gradle":    true,
+	"build.gradle.kts": true,
+	"composer.json":   true,
+	"pubspec.yaml":    true,
+	"mix.exs":         true,
+	"package.swift":   true,
+	"dockerfile":      true,
+}
+
+// IsManifestFile returns true if the file is a dependency manifest
+// or build file that is handled deterministically (not by LLM).
+func IsManifestFile(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	if manifestFiles[base] {
+		return true
+	}
+	// Also skip .csproj files
+	if strings.HasSuffix(strings.ToLower(path), ".csproj") {
+		return true
+	}
+	return false
+}

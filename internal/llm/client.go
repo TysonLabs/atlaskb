@@ -1,6 +1,9 @@
 package llm
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 type Message struct {
 	Role    string `json:"role"`
@@ -21,7 +24,12 @@ type StreamChunk struct {
 	Error error
 }
 
+type JSONSchema struct {
+	Name   string
+	Schema json.RawMessage
+}
+
 type Client interface {
-	Complete(ctx context.Context, model string, system string, messages []Message, maxTokens int) (*Response, error)
+	Complete(ctx context.Context, model string, system string, messages []Message, maxTokens int, schema *JSONSchema) (*Response, error)
 	CompleteStream(ctx context.Context, model string, system string, messages []Message, maxTokens int) (<-chan StreamChunk, error)
 }

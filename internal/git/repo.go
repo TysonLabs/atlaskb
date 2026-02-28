@@ -1,7 +1,6 @@
 package git
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -63,44 +62,83 @@ func DetectRepo(path string) (*RepoInfo, error) {
 }
 
 func ParseLog(repoPath string, maxCommits int) ([]CommitInfo, error) {
+	// Use COMMIT_BOUNDARY delimiter with full body (%B) instead of subject-only (%s)
 	args := []string{"log", fmt.Sprintf("--max-count=%d", maxCommits),
-		"--format=%H|%an|%aI|%s", "--name-only"}
+		"--format=COMMIT_BOUNDARY%n%H|%an|%aI%n%B", "--name-only"}
 	out, err := runGit(repoPath, args...)
 	if err != nil {
 		return nil, fmt.Errorf("git log: %w", err)
 	}
 
 	var commits []CommitInfo
-	var current *CommitInfo
+	// Split on COMMIT_BOUNDARY to get individual commits
+	blocks := strings.Split(out, "COMMIT_BOUNDARY")
 
-	scanner := bufio.NewScanner(strings.NewReader(out))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
+	for _, block := range blocks {
+		block = strings.TrimSpace(block)
+		if block == "" {
 			continue
 		}
 
-		parts := strings.SplitN(line, "|", 4)
-		if len(parts) == 4 {
-			// New commit line
-			if current != nil {
-				commits = append(commits, *current)
-			}
-			date, _ := time.Parse(time.RFC3339, parts[2])
-			current = &CommitInfo{
-				SHA:     parts[0],
-				Author:  parts[1],
-				Date:    date,
-				Message: parts[3],
-			}
-		} else if current != nil {
-			// File path line
-			current.FilesChanged = append(current.FilesChanged, line)
+		lines := strings.SplitN(block, "\n", 2)
+		if len(lines) < 1 {
+			continue
 		}
-	}
 
-	if current != nil {
-		commits = append(commits, *current)
+		// First line: SHA|Author|Date
+		headerLine := strings.TrimSpace(lines[0])
+		parts := strings.SplitN(headerLine, "|", 3)
+		if len(parts) < 3 {
+			continue
+		}
+
+		date, _ := time.Parse(time.RFC3339, parts[2])
+		commit := CommitInfo{
+			SHA:    parts[0],
+			Author: parts[1],
+			Date:   date,
+		}
+
+		// Remaining lines: body + file names
+		if len(lines) > 1 {
+			rest := lines[1]
+			// The body ends with a blank line, then file names follow
+			// Split into body and file list
+			bodyAndFiles := strings.Split(rest, "\n")
+			var bodyLines []string
+			inFiles := false
+
+			for _, l := range bodyAndFiles {
+				trimmed := strings.TrimSpace(l)
+				if trimmed == "" {
+					if len(bodyLines) > 0 {
+						// Potential transition from body to files
+						inFiles = true
+					}
+					continue
+				}
+				// File lines don't start with special chars and don't contain spaces (usually)
+				// but body text might. The heuristic: after the first blank line separator,
+				// if a line looks like a file path, treat it as such.
+				if inFiles && !strings.Contains(trimmed, " ") && (strings.Contains(trimmed, "/") || strings.Contains(trimmed, ".")) {
+					commit.FilesChanged = append(commit.FilesChanged, trimmed)
+				} else if inFiles && !strings.Contains(trimmed, " ") {
+					commit.FilesChanged = append(commit.FilesChanged, trimmed)
+				} else {
+					if inFiles {
+						// Turned out to still be body text, revert
+						inFiles = false
+					}
+					bodyLines = append(bodyLines, l)
+				}
+			}
+
+			commit.Message = strings.TrimSpace(strings.Join(bodyLines, "\n"))
+		}
+
+		if commit.SHA != "" {
+			commits = append(commits, commit)
+		}
 	}
 
 	return commits, nil

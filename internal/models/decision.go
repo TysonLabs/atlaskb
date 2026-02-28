@@ -75,6 +75,14 @@ func (s *DecisionStore) GetByID(ctx context.Context, id uuid.UUID) (*Decision, e
 	return d, nil
 }
 
+func (s *DecisionStore) DeleteByRepo(ctx context.Context, repoID uuid.UUID) error {
+	_, err := s.Pool.Exec(ctx, `DELETE FROM decisions WHERE repo_id = $1`, repoID)
+	if err != nil {
+		return fmt.Errorf("deleting decisions: %w", err)
+	}
+	return nil
+}
+
 func (s *DecisionStore) ListByRepo(ctx context.Context, repoID uuid.UUID) ([]Decision, error) {
 	rows, err := s.Pool.Query(ctx,
 		`SELECT id, repo_id, summary, description, rationale, alternatives, tradeoffs, provenance, made_at, still_valid, created_at, updated_at

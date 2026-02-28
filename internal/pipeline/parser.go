@@ -89,23 +89,37 @@ type GitLogResult struct {
 }
 
 var (
-	fencePattern    = regexp.MustCompile("(?s)```(?:json)?\\s*\n?(.*?)\\s*```")
-	// Matches { ... } or [ ... ] used as placeholder objects/arrays
-	placeholderObj  = regexp.MustCompile(`\{\s*\.\.\.\s*\}`)
-	placeholderArr  = regexp.MustCompile(`\[\s*\.\.\.\s*\]`)
-	// Matches "..." used as a placeholder string value (but not inside a real string)
-	placeholderStr  = regexp.MustCompile(`"\.{2,}"`)
-	// Matches trailing commas before ] or }
-	trailingComma   = regexp.MustCompile(`,\s*([}\]])`)
+	fencePattern  = regexp.MustCompile("(?s)```(?:json)?\\s*\n?(.*?)\\s*```")
+	singleFence   = regexp.MustCompile("(?s)^`([^`].*?)`$")
+	trailingComma = regexp.MustCompile(`,\s*([}\]])`)
+	// Match unquoted JSON keys: word characters after { or , followed by :
+	unquotedKey   = regexp.MustCompile(`([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:`)
 )
 
 // CleanJSON strips markdown code fences and other common LLM output artifacts.
 func CleanJSON(raw string) string {
 	raw = strings.TrimSpace(raw)
 
-	// Strip markdown code fences
+	// Strip markdown code fences (triple backticks)
 	if matches := fencePattern.FindStringSubmatch(raw); len(matches) > 1 {
 		raw = strings.TrimSpace(matches[1])
+	}
+
+	// Strip single-backtick wrapping
+	if matches := singleFence.FindStringSubmatch(raw); len(matches) > 1 {
+		raw = strings.TrimSpace(matches[1])
+	}
+
+	// Remove any remaining stray backticks
+	raw = strings.ReplaceAll(raw, "`", "")
+
+	// Strip "Thinking Process:" or similar preamble before JSON
+	if idx := strings.Index(raw, "{"); idx > 0 {
+		// Check if everything before { is non-JSON preamble
+		preamble := strings.TrimSpace(raw[:idx])
+		if len(preamble) > 0 && !strings.HasPrefix(preamble, "[") {
+			raw = raw[idx:]
+		}
 	}
 
 	// Find the first { or [ to start the JSON
@@ -168,13 +182,178 @@ func CleanJSON(raw string) string {
 
 	result := raw[start : end+1]
 
-	// Clean up LLM placeholder artifacts
-	result = placeholderObj.ReplaceAllString(result, `null`)
-	result = placeholderArr.ReplaceAllString(result, `[]`)
-	result = placeholderStr.ReplaceAllString(result, `""`)
+	// Strip ellipsis placeholders outside of quoted strings
+	result = stripEllipsis(result)
+
+	// Fix unquoted JSON keys (common with local models)
+	result = unquotedKey.ReplaceAllString(result, `${1}"${2}":`)
+
+	// Fix unquoted string values (common with local models)
+	// Match patterns like: "key": word_value (where word_value is not a JSON literal)
+	result = fixUnquotedValues(result)
+
+	// Fix trailing commas after cleanup
 	result = trailingComma.ReplaceAllString(result, `$1`)
 
 	return result
+}
+
+// fixUnquotedValues wraps unquoted string values in JSON with double quotes.
+// Handles cases like "key": some_value → "key": "some_value"
+// Only operates outside of quoted strings.
+var unquotedValuePattern = regexp.MustCompile(`(:\s*)([a-zA-Z_][a-zA-Z0-9_]*(?:\s+[a-zA-Z_][a-zA-Z0-9_]*)*)(\s*[,}\]])`)
+
+func fixUnquotedValues(s string) string {
+	jsonLiterals := map[string]bool{"true": true, "false": true, "null": true}
+
+	// Process in a string-aware way
+	var out strings.Builder
+	out.Grow(len(s))
+	inString := false
+	escaped := false
+
+	i := 0
+	for i < len(s) {
+		c := s[i]
+
+		if escaped {
+			out.WriteByte(c)
+			escaped = false
+			i++
+			continue
+		}
+		if c == '\\' && inString {
+			out.WriteByte(c)
+			escaped = true
+			i++
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+			out.WriteByte(c)
+			i++
+			continue
+		}
+		if inString {
+			out.WriteByte(c)
+			i++
+			continue
+		}
+
+		// Outside a string, check if we're at a colon followed by an unquoted value
+		if c == ':' {
+			out.WriteByte(c)
+			i++
+			// Skip whitespace after colon
+			for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
+				out.WriteByte(s[i])
+				i++
+			}
+			if i >= len(s) {
+				continue
+			}
+			// Check if next char starts an unquoted identifier (not a JSON value start)
+			next := s[i]
+			if next != '"' && next != '{' && next != '[' && next != '-' && !(next >= '0' && next <= '9') {
+				// Collect the unquoted value
+				start := i
+				for i < len(s) && s[i] != ',' && s[i] != '}' && s[i] != ']' && s[i] != '\n' {
+					i++
+				}
+				val := strings.TrimSpace(s[start:i])
+				if !jsonLiterals[val] && len(val) > 0 {
+					out.WriteByte('"')
+					out.WriteString(val)
+					out.WriteByte('"')
+				} else {
+					out.WriteString(val)
+				}
+				continue
+			}
+			continue
+		}
+
+		out.WriteByte(c)
+		i++
+	}
+
+	return out.String()
+}
+
+// stripEllipsis removes all sequences of 2+ dots that appear outside quoted strings,
+// replacing them with null (if after a colon) or removing them (if in arrays/elsewhere).
+// This handles all the various ways local LLMs use "..." as placeholder values.
+func stripEllipsis(s string) string {
+	var out strings.Builder
+	out.Grow(len(s))
+
+	inString := false
+	escaped := false
+
+	i := 0
+	for i < len(s) {
+		c := s[i]
+
+		if escaped {
+			out.WriteByte(c)
+			escaped = false
+			i++
+			continue
+		}
+
+		if c == '\\' && inString {
+			out.WriteByte(c)
+			escaped = true
+			i++
+			continue
+		}
+
+		if c == '"' {
+			inString = !inString
+			out.WriteByte(c)
+			i++
+			continue
+		}
+
+		if inString {
+			out.WriteByte(c)
+			i++
+			continue
+		}
+
+		// Outside a string: check for sequences of 2+ dots
+		if c == '.' && i+1 < len(s) && s[i+1] == '.' {
+			// Count consecutive dots
+			dotEnd := i
+			for dotEnd < len(s) && s[dotEnd] == '.' {
+				dotEnd++
+			}
+			// Skip the dots entirely — look back to see if we need to insert "null"
+			// Find the last non-whitespace character before these dots
+			needNull := false
+			for j := out.Len() - 1; j >= 0; j-- {
+				ch := out.String()[j]
+				if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+					continue
+				}
+				if ch == ':' {
+					needNull = true
+				}
+				break
+			}
+			if needNull {
+				out.WriteString("null")
+			}
+			// Skip any trailing whitespace after the dots too
+			i = dotEnd
+			continue
+		}
+
+		out.WriteByte(c)
+		i++
+	}
+
+	return out.String()
 }
 
 // Valid enum values for sanitization.

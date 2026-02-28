@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"log"
 	"os/signal"
 	"syscall"
 	"time"
@@ -33,6 +34,7 @@ type OrchestratorResult struct {
 	RepoID          uuid.UUID
 	RepoName        string
 	Phase2Stats     *Phase2Stats
+	QualityScore    *QualityScore
 	CostEstimate    CostEstimate
 	TotalTokens     int
 	TotalCostUSD    float64
@@ -83,6 +85,24 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	}
 	result.RepoID = repo.ID
 
+	// --force: clear all existing data for this repo
+	if cfg.Force {
+		log.Println("[force] Clearing existing data...")
+		factStore := &models.FactStore{Pool: cfg.Pool}
+		relStore := &models.RelationshipStore{Pool: cfg.Pool}
+		decisionStore := &models.DecisionStore{Pool: cfg.Pool}
+		entityStore := &models.EntityStore{Pool: cfg.Pool}
+		jobStore := &models.JobStore{Pool: cfg.Pool}
+
+		// Order matters for FK constraints
+		factStore.DeleteByRepo(ctx, repo.ID)
+		relStore.DeleteByRepo(ctx, repo.ID)
+		decisionStore.DeleteByRepo(ctx, repo.ID)
+		entityStore.DeleteByRepo(ctx, repo.ID)
+		jobStore.DeleteByRepo(ctx, repo.ID)
+		log.Println("[force] Done, re-extracting from scratch")
+	}
+
 	// Phase 1: Structural inventory
 	fmt.Println("Phase 1: Structural inventory...")
 	manifest, err := RunPhase1(repoInfo.RootPath)
@@ -99,6 +119,92 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	fmt.Println()
 	fmt.Println(FormatCost(costEst))
 	fmt.Println()
+
+	// Structured dependency parsing (deterministic, no LLM)
+	deps := ExtractDependencies(repoInfo.RootPath, manifest)
+	if len(deps) > 0 {
+		entityStore := &models.EntityStore{Pool: cfg.Pool}
+		relStore := &models.RelationshipStore{Pool: cfg.Pool}
+		factStore := &models.FactStore{Pool: cfg.Pool}
+
+		// Find or create repo entity
+		repoEntity, _ := entityStore.FindByQualifiedName(ctx, repo.ID, repoName)
+		if repoEntity == nil {
+			repoEntity = &models.Entity{
+				RepoID:        repo.ID,
+				Kind:          models.EntityService,
+				Name:          repoName,
+				QualifiedName: repoName,
+				Summary:       models.Ptr("Repository root entity"),
+			}
+			entityStore.Upsert(ctx, repoEntity)
+		}
+
+		directCount, indirectCount := 0, 0
+		for _, dep := range deps {
+			if dep.Dev {
+				indirectCount++
+			} else {
+				directCount++
+			}
+
+			// Create entity for the dependency
+			depEntity := &models.Entity{
+				RepoID:        repo.ID,
+				Kind:          models.EntityModule,
+				Name:          dep.Name,
+				QualifiedName: dep.Name,
+				Summary:       models.Ptr(fmt.Sprintf("External dependency from %s", dep.Source)),
+			}
+			if err := entityStore.Upsert(ctx, depEntity); err != nil {
+				logVerboseF("[deps] warn: upserting dep entity %s: %v", dep.Name, err)
+				continue
+			}
+
+			// Create depends_on relationship
+			rel := &models.Relationship{
+				RepoID:       repo.ID,
+				FromEntityID: repoEntity.ID,
+				ToEntityID:   depEntity.ID,
+				Kind:         models.RelDependsOn,
+				Description:  models.Ptr(fmt.Sprintf("Dependency from %s", dep.Source)),
+				Strength:     models.StrengthStrong,
+				Provenance: []models.Provenance{{
+					SourceType: "file",
+					Repo:       repoName,
+					Ref:        dep.Source,
+				}},
+			}
+			relStore.Upsert(ctx, rel)
+
+			// Create version fact if available
+			if dep.Version != "" {
+				devStr := ""
+				if dep.Dev {
+					devStr = " (dev/indirect)"
+				}
+				fact := &models.Fact{
+					EntityID:   depEntity.ID,
+					RepoID:     repo.ID,
+					Claim:      fmt.Sprintf("Required at version %s%s", dep.Version, devStr),
+					Dimension:  models.DimensionWhat,
+					Category:   models.CategoryConstraint,
+					Confidence: models.ConfidenceHigh,
+					Provenance: []models.Provenance{{
+						SourceType: "file",
+						Repo:       repoName,
+						Ref:        dep.Source,
+					}},
+				}
+				factStore.Create(ctx, fact)
+			}
+
+			logVerboseF("[deps] %s: %s %s", dep.Source, dep.Name, dep.Version)
+		}
+
+		log.Printf("[deps] parsed %d dependencies (%d direct, %d dev/indirect) from manifest files",
+			len(deps), directCount, indirectCount)
+	}
 
 	if cfg.DryRun {
 		fmt.Println("Dry run — stopping before LLM calls.")
@@ -152,7 +258,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		return result, nil
 	}
 
-	// Phase 4: Cross-module synthesis
+	// Phase 4: Cross-module synthesis (non-fatal — data is still queryable without it)
 	fmt.Println("Phase 4: Cross-module synthesis...")
 	if err := RunPhase4(ctx, Phase4Config{
 		RepoID:   repo.ID,
@@ -161,7 +267,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		Pool:     cfg.Pool,
 		LLM:      cfg.LLM,
 	}); err != nil {
-		return result, fmt.Errorf("phase 4: %w", err)
+		fmt.Printf("  Warning: phase 4 synthesis failed: %v\n", err)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -190,6 +296,18 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	fmt.Println("Generating embeddings...")
 	if err := generateEmbeddings(ctx, cfg.Pool, cfg.Embedder, repo.ID); err != nil {
 		fmt.Printf("  Warning: embedding generation failed: %v\n", err)
+	}
+
+	// Compute quality score
+	fmt.Println("Computing quality score...")
+	qs, err := ComputeQuality(ctx, cfg.Pool, repo.ID)
+	if err != nil {
+		fmt.Printf("  Warning: quality score computation failed: %v\n", err)
+	} else {
+		result.QualityScore = qs
+		fmt.Printf("  %s\n", FormatQualityScore(qs))
+		fmt.Println()
+		fmt.Print(FormatQualityDetails(qs))
 	}
 
 	// Update repo record

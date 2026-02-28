@@ -34,6 +34,30 @@ func (s *RelationshipStore) Create(ctx context.Context, r *Relationship) error {
 	return nil
 }
 
+func (s *RelationshipStore) Upsert(ctx context.Context, r *Relationship) error {
+	r.CreatedAt = time.Now()
+
+	provJSON, err := json.Marshal(r.Provenance)
+	if err != nil {
+		return fmt.Errorf("marshaling provenance: %w", err)
+	}
+
+	err = s.Pool.QueryRow(ctx,
+		`INSERT INTO relationships (id, repo_id, from_entity_id, to_entity_id, kind, description, strength, provenance, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 ON CONFLICT (repo_id, from_entity_id, to_entity_id, kind) DO UPDATE SET
+		   description = COALESCE(EXCLUDED.description, relationships.description),
+		   strength = EXCLUDED.strength,
+		   provenance = EXCLUDED.provenance
+		 RETURNING id`,
+		uuid.New(), r.RepoID, r.FromEntityID, r.ToEntityID, r.Kind, r.Description, r.Strength, provJSON, r.CreatedAt,
+	).Scan(&r.ID)
+	if err != nil {
+		return fmt.Errorf("upserting relationship: %w", err)
+	}
+	return nil
+}
+
 func (s *RelationshipStore) ListByEntity(ctx context.Context, entityID uuid.UUID) ([]Relationship, error) {
 	rows, err := s.Pool.Query(ctx,
 		`SELECT id, repo_id, from_entity_id, to_entity_id, kind, description, strength, provenance, created_at
@@ -82,6 +106,17 @@ func (s *RelationshipStore) ListByRepo(ctx context.Context, repoID uuid.UUID) ([
 		rels = append(rels, r)
 	}
 	return rels, nil
+}
+
+func (s *RelationshipStore) CountByRepo(ctx context.Context, repoID uuid.UUID) (int, error) {
+	var count int
+	err := s.Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM relationships WHERE repo_id = $1`, repoID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting relationships: %w", err)
+	}
+	return count, nil
 }
 
 func (s *RelationshipStore) DeleteByRepo(ctx context.Context, repoID uuid.UUID) error {

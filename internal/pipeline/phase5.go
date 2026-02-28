@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/google/uuid"
@@ -61,8 +62,20 @@ func RunPhase5(ctx context.Context, cfg Phase5Config) error {
 		return err
 	}
 
-	var entitySB strings.Builder
+	// Filter to core entities (skip external deps)
+	var coreEntities []models.Entity
 	for _, e := range entities {
+		if e.Kind == models.EntityModule && e.Path == nil {
+			continue
+		}
+		coreEntities = append(coreEntities, e)
+	}
+	if len(coreEntities) > 60 {
+		coreEntities = coreEntities[:60]
+	}
+
+	var entitySB strings.Builder
+	for _, e := range coreEntities {
 		summary := ""
 		if e.Summary != nil {
 			summary = *e.Summary
@@ -70,21 +83,33 @@ func RunPhase5(ctx context.Context, cfg Phase5Config) error {
 		fmt.Fprintf(&entitySB, "- %s (%s): %s\n", e.QualifiedName, e.Kind, summary)
 	}
 
-	// Gather architectural facts
+	// Gather architectural facts (limit to keep context manageable)
 	var archSB strings.Builder
-	for _, e := range entities {
+	archFactCount := 0
+	for _, e := range coreEntities {
+		if archFactCount >= 40 {
+			break
+		}
 		facts, _ := factStore.ListByEntity(ctx, e.ID)
 		for _, f := range facts {
+			if archFactCount >= 40 {
+				break
+			}
 			if f.Category == models.CategoryPattern || f.Dimension == models.DimensionHow {
 				fmt.Fprintf(&archSB, "- %s\n", f.Claim)
+				archFactCount++
 			}
 		}
 	}
 
-	// Gather decisions
+	// Gather decisions (limit)
 	decisions, _ := decisionStore.ListByRepo(ctx, cfg.RepoID)
 	var decSB strings.Builder
-	for _, d := range decisions {
+	decLimit := 10
+	for i, d := range decisions {
+		if i >= decLimit {
+			break
+		}
 		fmt.Fprintf(&decSB, "- %s: %s\n", d.Summary, d.Rationale)
 	}
 
@@ -96,7 +121,7 @@ func RunPhase5(ctx context.Context, cfg Phase5Config) error {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		resp, err := cfg.LLM.Complete(ctx, cfg.Model, systemPromptPhase5, []llm.Message{
 			{Role: "user", Content: prompt},
-		}, 8192)
+		}, 8192, SchemaPhase5)
 		if err != nil {
 			if attempt == maxRetries {
 				jobStore.Fail(ctx, claimed.ID, err.Error())
@@ -130,7 +155,62 @@ func RunPhase5(ctx context.Context, cfg Phase5Config) error {
 			Summary:       models.Ptr(result.Summary),
 			Capabilities:  result.Capabilities,
 		}
-		entityStore.Create(ctx, repoEntity)
+		if err := entityStore.Upsert(ctx, repoEntity); err != nil {
+			logVerboseF("[phase5] warn: upserting repo entity: %v", err)
+		}
+	} else {
+		// Update existing repo entity with summary and capabilities
+		repoEntity.Summary = models.Ptr(result.Summary)
+		repoEntity.Capabilities = result.Capabilities
+		if err := entityStore.Update(ctx, repoEntity); err != nil {
+			logVerboseF("[phase5] warn: updating repo entity: %v", err)
+		}
+	}
+
+	factsStored := 0
+
+	// Store architecture as a fact on repo entity
+	if result.Architecture != "" {
+		fact := &models.Fact{
+			EntityID:   repoEntity.ID,
+			RepoID:     cfg.RepoID,
+			Claim:      fmt.Sprintf("Architecture: %s", result.Architecture),
+			Dimension:  models.DimensionWhat,
+			Category:   models.CategoryPattern,
+			Confidence: models.ConfidenceHigh,
+			Provenance: []models.Provenance{{
+				SourceType: "file",
+				Repo:       cfg.RepoName,
+				Ref:        "phase5-summary",
+			}},
+		}
+		if err := factStore.Create(ctx, fact); err != nil {
+			logVerboseF("[phase5] warn: creating architecture fact: %v", err)
+		} else {
+			factsStored++
+		}
+	}
+
+	// Store key_integration_points as facts
+	for _, point := range result.KeyIntegrationPoints {
+		fact := &models.Fact{
+			EntityID:   repoEntity.ID,
+			RepoID:     cfg.RepoID,
+			Claim:      fmt.Sprintf("Integration point: %s", point),
+			Dimension:  models.DimensionWhat,
+			Category:   models.CategoryBehavior,
+			Confidence: models.ConfidenceMedium,
+			Provenance: []models.Provenance{{
+				SourceType: "file",
+				Repo:       cfg.RepoName,
+				Ref:        "phase5-summary",
+			}},
+		}
+		if err := factStore.Create(ctx, fact); err != nil {
+			logVerboseF("[phase5] warn: creating integration point fact: %v", err)
+		} else {
+			factsStored++
+		}
 	}
 
 	// Store convention facts
@@ -148,7 +228,11 @@ func RunPhase5(ctx context.Context, cfg Phase5Config) error {
 				Ref:        "phase5-summary",
 			}},
 		}
-		factStore.Create(ctx, fact)
+		if err := factStore.Create(ctx, fact); err != nil {
+			logVerboseF("[phase5] warn: creating convention fact: %v", err)
+		} else {
+			factsStored++
+		}
 	}
 
 	// Store risk/debt facts
@@ -166,8 +250,15 @@ func RunPhase5(ctx context.Context, cfg Phase5Config) error {
 				Ref:        "phase5-summary",
 			}},
 		}
-		factStore.Create(ctx, fact)
+		if err := factStore.Create(ctx, fact); err != nil {
+			logVerboseF("[phase5] warn: creating risk fact: %v", err)
+		} else {
+			factsStored++
+		}
 	}
+
+	log.Printf("[phase5] stored architecture fact, %d integration points, %d conventions, %d risks",
+		len(result.KeyIntegrationPoints), len(result.Conventions), len(result.RisksAndDebt))
 
 	tokens := lastResp.InputTokens + lastResp.OutputTokens
 	costUSD := float64(lastResp.InputTokens)/1_000_000*OpusInputPer1M + float64(lastResp.OutputTokens)/1_000_000*OpusOutputPer1M

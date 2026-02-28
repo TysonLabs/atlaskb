@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tgeorge06/atlaskb/internal/models"
+	"github.com/tgeorge06/atlaskb/internal/pipeline"
 )
 
 var reposCmd = &cobra.Command{
@@ -40,9 +41,21 @@ func runRepos(cmd *cobra.Command, args []string) error {
 	for _, r := range repos {
 		indexed := "never"
 		if r.LastIndexedAt != nil {
-			indexed = r.LastIndexedAt.Format("2006-01-02 15:04:05")
+			indexed = r.LastIndexedAt.Format("2006-01-02")
 		}
-		fmt.Printf("%-30s  %-50s  indexed: %s\n", r.Name, r.LocalPath, indexed)
+
+		// Compute quality score for indexed repos
+		scoreStr := "-"
+		countsStr := ""
+		if r.LastIndexedAt != nil {
+			qs, err := pipeline.ComputeQuality(cmd.Context(), pool, r.ID)
+			if err == nil {
+				scoreStr = fmt.Sprintf("%.0f", qs.Overall)
+				countsStr = fmt.Sprintf("  entities: %d  facts: %d  rels: %d", qs.EntityCount, qs.FactCount, qs.RelationshipCount)
+			}
+		}
+
+		fmt.Printf("%-30s  %-50s  indexed: %s  score: %s%s\n", r.Name, r.LocalPath, indexed, scoreStr, countsStr)
 	}
 
 	return nil

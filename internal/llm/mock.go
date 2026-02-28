@@ -3,13 +3,13 @@ package llm
 import "context"
 
 type MockClient struct {
-	CompleteFunc       func(ctx context.Context, model string, system string, messages []Message, maxTokens int) (*Response, error)
+	CompleteFunc       func(ctx context.Context, model string, system string, messages []Message, maxTokens int, schema *JSONSchema) (*Response, error)
 	CompleteStreamFunc func(ctx context.Context, model string, system string, messages []Message, maxTokens int) (<-chan StreamChunk, error)
 }
 
-func (m *MockClient) Complete(ctx context.Context, model string, system string, messages []Message, maxTokens int) (*Response, error) {
+func (m *MockClient) Complete(ctx context.Context, model string, system string, messages []Message, maxTokens int, schema *JSONSchema) (*Response, error) {
 	if m.CompleteFunc != nil {
-		return m.CompleteFunc(ctx, model, system, messages, maxTokens)
+		return m.CompleteFunc(ctx, model, system, messages, maxTokens, schema)
 	}
 	return &Response{
 		Content:      "{}",
