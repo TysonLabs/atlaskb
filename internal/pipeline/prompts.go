@@ -10,14 +10,15 @@ CRITICAL RULES:
 - Every string value must contain actual content extracted from the code.
 - If a file has no entities or facts to extract, use empty arrays [].`
 
-func Phase2Prompt(filePath, language, repoName string, stackInfo StackInfo, content string) string {
+func Phase2Prompt(filePath, language, repoName string, stackInfo StackInfo, content string, roster []EntityEntry) string {
+	rosterSection := FormatRosterForPrompt(roster, filePath)
 	return fmt.Sprintf(`Analyze this file and extract structured knowledge.
 
 Repository: %s
 File: %s
 Language: %s
 Stack: %v
-
+%s
 <file_content>
 %s
 </file_content>
@@ -198,7 +199,7 @@ RELATIONSHIP RULES — EVERY entity MUST have at least 1 relationship:
 - CALLS: If a method calls another entity's method, emit "calls" from the caller to the callee.
 - CONSTRUCTORS: If a function is a constructor (returns a struct), emit "produces" from the function to the struct type.
 - TOP-LEVEL FUNCTIONS: Should have "calls" or "depends_on" relationships to the entities they use.
-- Count your relationships. If any entity has 0 relationships, add at least an "owns" or "calls" relationship.`, repoName, filePath, language, stackInfo.Languages, content)
+- Count your relationships. If any entity has 0 relationships, add at least an "owns" or "calls" relationship.`, repoName, filePath, language, stackInfo.Languages, rosterSection, content)
 }
 
 const systemPromptPhase4 = `You are a software architect. You analyze entities and facts extracted from a codebase and synthesize cross-module insights about architecture, data flows, and contracts.

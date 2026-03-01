@@ -277,6 +277,21 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		}
 	}
 
+	// Phase 1.5: Ctags structural extraction (provides ground-truth entity names)
+	var entityRoster []EntityEntry
+	if shouldRunPhase(cfg.Phases, "phase1.5") || shouldRunPhase(cfg.Phases, "phase2") || len(cfg.Phases) == 0 {
+		fmt.Println("Phase 1.5: Extracting structural symbols...")
+		symbols, ctagsErr := RunCtags(cfg.RepoPath)
+		if ctagsErr != nil {
+			fmt.Printf("  Warning: ctags extraction failed: %v\n", ctagsErr)
+		} else if symbols == nil {
+			fmt.Println("  ctags not installed — skipping (install with: brew install universal-ctags)")
+		} else {
+			entityRoster = BuildEntityRoster(symbols)
+			fmt.Printf("  Discovered %d symbols across %d files\n", len(entityRoster), len(symbols))
+		}
+	}
+
 	if cfg.DryRun {
 		fmt.Println("Dry run — stopping before LLM calls.")
 		return result, nil
@@ -310,6 +325,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 			Concurrency: cfg.Concurrency,
 			Pool:        cfg.Pool,
 			LLM:         cfg.LLM,
+			Roster:      entityRoster,
 		})
 		if err != nil {
 			return result, fmt.Errorf("phase 2: %w", err)

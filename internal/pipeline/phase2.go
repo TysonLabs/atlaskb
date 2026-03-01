@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -25,14 +26,31 @@ type Phase2Config struct {
 	Concurrency int
 	Pool        *pgxpool.Pool
 	LLM         llm.Client
+	Roster      []EntityEntry // Ctags-derived entity roster for grounding names
 }
 
 type Phase2Stats struct {
-	FilesProcessed int
-	FilesSkipped   int
+	FilesProcessed  int
+	FilesSkipped    int
 	EntitiesCreated int
-	FactsCreated   int
-	TotalTokens    int
+	FactsCreated    int
+	RelsCreated     int
+	RelsDeferred    int
+	RelsResolved    int
+	TotalTokens     int
+}
+
+// DeferredRelationship is a relationship that couldn't be resolved during initial
+// processing because the target entity hadn't been created yet (concurrent processing).
+type DeferredRelationship struct {
+	From        string
+	To          string
+	Kind        string
+	Description string
+	Strength    string
+	SourceFile  string
+	RepoName    string
+	AnalyzedAt  string
 }
 
 func RunPhase2(ctx context.Context, cfg Phase2Config) (*Phase2Stats, error) {
@@ -41,6 +59,10 @@ func RunPhase2(ctx context.Context, cfg Phase2Config) (*Phase2Stats, error) {
 	entityStore := &models.EntityStore{Pool: cfg.Pool}
 	factStore := &models.FactStore{Pool: cfg.Pool}
 	relStore := &models.RelationshipStore{Pool: cfg.Pool}
+
+	// Deferred relationships: collected during concurrent processing, resolved after
+	var deferredMu sync.Mutex
+	var deferred []DeferredRelationship
 
 	// Create jobs for all analyzable files
 	for _, fi := range cfg.Manifest.Files {
@@ -94,12 +116,17 @@ func RunPhase2(ctx context.Context, cfg Phase2Config) (*Phase2Stats, error) {
 
 		g.Go(func() error {
 			fmt.Printf("  [%d/%d] Analyzing %s...\n", processed+1, totalJobs, job.Target)
-			err := processFile(gctx, cfg, job, entityStore, factStore, relStore, stats)
+			fileDeferred, err := processFile(gctx, cfg, job, entityStore, factStore, relStore, stats)
 			processed++
 			if err != nil {
 				jobStore.Fail(gctx, job.ID, err.Error())
 				fmt.Printf("  [%d/%d] FAILED %s: %v\n", processed, totalJobs, job.Target, err)
 				return nil // don't cancel other workers
+			}
+			if len(fileDeferred) > 0 {
+				deferredMu.Lock()
+				deferred = append(deferred, fileDeferred...)
+				deferredMu.Unlock()
 			}
 			fmt.Printf("  [%d/%d] Done %s\n", processed, totalJobs, job.Target)
 			return nil
@@ -110,29 +137,71 @@ func RunPhase2(ctx context.Context, cfg Phase2Config) (*Phase2Stats, error) {
 		return stats, err
 	}
 
+	// Second pass: resolve deferred relationships now that all entities are in the DB
+	if len(deferred) > 0 {
+		resolved := 0
+		for _, d := range deferred {
+			fromID, fromOK := resolveEntity(ctx, entityStore, cfg.RepoID, d.From)
+			if !fromOK {
+				logVerboseF("[phase2-deferred] %s: still unresolved (from): %s", d.SourceFile, d.From)
+				continue
+			}
+			toID, toOK := resolveEntity(ctx, entityStore, cfg.RepoID, d.To)
+			if !toOK {
+				logVerboseF("[phase2-deferred] %s: still unresolved (to): %s", d.SourceFile, d.To)
+				continue
+			}
+			rel := &models.Relationship{
+				RepoID:       cfg.RepoID,
+				FromEntityID: fromID,
+				ToEntityID:   toID,
+				Kind:         d.Kind,
+				Description:  models.Ptr(d.Description),
+				Strength:     d.Strength,
+				Provenance: []models.Provenance{{
+					SourceType: "file",
+					Repo:       d.RepoName,
+					Ref:        d.SourceFile,
+					AnalyzedAt: d.AnalyzedAt,
+				}},
+			}
+			if err := relStore.Upsert(ctx, rel); err != nil {
+				logVerboseF("[phase2-deferred] warn: upserting relationship: %v", err)
+			} else {
+				resolved++
+			}
+		}
+		stats.RelsDeferred = len(deferred)
+		stats.RelsResolved = resolved
+		if resolved > 0 || len(deferred) > 0 {
+			fmt.Printf("  Deferred relationships: %d total, %d resolved, %d still unresolved\n",
+				len(deferred), resolved, len(deferred)-resolved)
+		}
+	}
+
 	return stats, nil
 }
 
 func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJob,
 	entityStore *models.EntityStore, factStore *models.FactStore, relStore *models.RelationshipStore,
-	stats *Phase2Stats) error {
+	stats *Phase2Stats) ([]DeferredRelationship, error) {
 
 	jobStore := &models.JobStore{Pool: cfg.Pool}
 
 	content, err := os.ReadFile(filepath.Join(cfg.RepoPath, job.Target))
 	if err != nil {
-		return fmt.Errorf("reading file: %w", err)
+		return nil, fmt.Errorf("reading file: %w", err)
 	}
 
 	fi := ClassifyFile(job.Target, int64(len(content)))
 
-	prompt := Phase2Prompt(job.Target, fi.Language, cfg.RepoName, cfg.Manifest.Stack, string(content))
+	prompt := Phase2Prompt(job.Target, fi.Language, cfg.RepoName, cfg.Manifest.Stack, string(content), cfg.Roster)
 
 	resp, attempts, err := callLLMWithRetry(ctx, cfg.LLM, cfg.Model, systemPromptPhase2, []llm.Message{
 		{Role: "user", Content: prompt},
 	}, 4096, SchemaPhase2, DefaultRetryConfig)
 	if err != nil {
-		return fmt.Errorf("LLM call: %w", err)
+		return nil, fmt.Errorf("LLM call: %w", err)
 	}
 
 	result, err := ParsePhase2(resp.Content)
@@ -142,7 +211,7 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 		if len(preview) > 200 {
 			preview = preview[:200]
 		}
-		return fmt.Errorf("parsing response: %w\n  raw preview: %s", err, preview)
+		return nil, fmt.Errorf("parsing response: %w\n  raw preview: %s", err, preview)
 	}
 	_ = attempts
 
@@ -257,17 +326,26 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 		stats.FactsCreated++
 	}
 
-	// Store relationships using Upsert
+	// Store relationships using Upsert, defer unresolvable ones
+	var fileDeferred []DeferredRelationship
 	relsCreated := 0
 	for _, ext := range result.Relationships {
 		fromID, fromOK := resolveEntityWithMap(ctx, entityStore, cfg.RepoID, ext.From, entityMap)
-		if !fromOK {
-			logVerboseF("[phase2] %s: relationship skipped (from entity not found): %s", job.Target, ext.From)
-			continue
-		}
 		toID, toOK := resolveEntityWithMap(ctx, entityStore, cfg.RepoID, ext.To, entityMap)
-		if !toOK {
-			logVerboseF("[phase2] %s: relationship skipped (to entity not found): %s", job.Target, ext.To)
+
+		if !fromOK || !toOK {
+			// Defer: the target entity may not exist yet due to concurrent processing
+			fileDeferred = append(fileDeferred, DeferredRelationship{
+				From:        ext.From,
+				To:          ext.To,
+				Kind:        ext.Kind,
+				Description: ext.Description,
+				Strength:    ext.Strength,
+				SourceFile:  job.Target,
+				RepoName:    cfg.RepoName,
+				AnalyzedAt:  job.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			})
+			logVerboseF("[phase2] %s: relationship deferred (entity not yet available): %s → %s", job.Target, ext.From, ext.To)
 			continue
 		}
 		rel := &models.Relationship{
@@ -290,12 +368,14 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 			relsCreated++
 		}
 	}
+	stats.RelsCreated += relsCreated
 
 	// Mark job complete
 	stats.TotalTokens += resp.InputTokens + resp.OutputTokens
 	stats.FilesProcessed++
 	costUSD := float64(resp.InputTokens)/1_000_000*SonnetInputPer1M + float64(resp.OutputTokens)/1_000_000*SonnetOutputPer1M
-	return jobStore.CompleteWithDetails(ctx, job.ID, resp.InputTokens+resp.OutputTokens, costUSD, resp.Model, attempts)
+	err = jobStore.CompleteWithDetails(ctx, job.ID, resp.InputTokens+resp.OutputTokens, costUSD, resp.Model, attempts)
+	return fileDeferred, err
 }
 
 func logVerboseF(format string, args ...any) {

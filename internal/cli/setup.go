@@ -3,7 +3,11 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/huh"
@@ -351,6 +355,55 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	fmt.Println(successStyle.Render("  Setup complete!"))
 	fmt.Println(dimStyle.Render("  Config saved to: " + path))
+
+	// Check for optional ctags
+	if _, err := exec.LookPath("ctags"); err != nil {
+		fmt.Println()
+		fmt.Println(dimStyle.Render("  Universal Ctags improves entity name accuracy during indexing."))
+
+		var installCtags bool
+		ctagsForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewConfirm().
+					Title("Install Universal Ctags?").
+					Description("Recommended for better indexing quality").
+					Affirmative("Yes, install").
+					Negative("No, skip").
+					Value(&installCtags),
+			),
+		)
+		if err := ctagsForm.Run(); err == nil && installCtags {
+			installCmd, installArgs := ctagsInstallCommand()
+			if installCmd == "" {
+				fmt.Println(errorStyle.Render("  Could not detect package manager. Install manually:"))
+				fmt.Println(dimStyle.Render("    brew install universal-ctags    (macOS)"))
+				fmt.Println(dimStyle.Render("    apt install universal-ctags     (Linux)"))
+			} else {
+				fmt.Printf(dimStyle.Render("  Running: %s %s\n"), installCmd, joinArgs(installArgs))
+				cmd := exec.Command(installCmd, installArgs...)
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if err := cmd.Run(); err != nil {
+					fmt.Println(errorStyle.Render("  Install failed: " + err.Error()))
+					fmt.Println(dimStyle.Render("  You can install manually later."))
+				} else {
+					fmt.Println(successStyle.Render("  ctags installed successfully"))
+				}
+			}
+		} else if err == nil {
+			fmt.Println(dimStyle.Render("  Skipped. You can install later with:"))
+			installCmd, installArgs := ctagsInstallCommand()
+			if installCmd != "" {
+				fmt.Printf(dimStyle.Render("    %s %s\n"), installCmd, joinArgs(installArgs))
+			} else {
+				fmt.Println(dimStyle.Render("    brew install universal-ctags    (macOS)"))
+				fmt.Println(dimStyle.Render("    apt install universal-ctags     (Linux)"))
+			}
+		}
+	} else {
+		fmt.Println(dimStyle.Render("  ctags detected — entity grounding enabled"))
+	}
+
 	fmt.Println()
 	fmt.Println(dimStyle.Render("  Next steps:"))
 	fmt.Println(dimStyle.Render("    atlaskb index /path/to/repo    Index a repository"))
@@ -358,6 +411,31 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	return nil
+}
+
+// ctagsInstallCommand returns the package manager command and args for installing ctags.
+func ctagsInstallCommand() (string, []string) {
+	switch runtime.GOOS {
+	case "darwin":
+		if _, err := exec.LookPath("brew"); err == nil {
+			return "brew", []string{"install", "universal-ctags"}
+		}
+	case "linux":
+		if _, err := exec.LookPath("apt-get"); err == nil {
+			return "sudo", []string{"apt-get", "install", "-y", "universal-ctags"}
+		}
+		if _, err := exec.LookPath("dnf"); err == nil {
+			return "sudo", []string{"dnf", "install", "-y", "ctags"}
+		}
+		if _, err := exec.LookPath("pacman"); err == nil {
+			return "sudo", []string{"pacman", "-S", "--noconfirm", "ctags"}
+		}
+	}
+	return "", nil
+}
+
+func joinArgs(args []string) string {
+	return strings.Join(args, " ")
 }
 
 // confirmRetry asks the user whether to retry the current step or quit.

@@ -72,6 +72,17 @@ func resolveEntity(ctx context.Context, entityStore *models.EntityStore, repoID 
 		}
 	}
 
+	// 4. Unqualified name fallback: if the name has no "::" separator, search across all packages
+	// This handles cases like "HeaderFilter" (from tests) matching "filters::HeaderFilter"
+	if !strings.Contains(qualifiedName, "::") {
+		candidates, _ := entityStore.FindByName(ctx, repoID, qualifiedName)
+		if len(candidates) == 1 {
+			// Unambiguous match — use it
+			logVerboseF("[resolve] %s → unqualified match to %s", qualifiedName, candidates[0].QualifiedName)
+			return candidates[0].ID, true
+		}
+	}
+
 	return uuid.Nil, false
 }
 
