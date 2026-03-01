@@ -52,6 +52,21 @@ var languageExtensions = map[string]string{
 	".r":     "r",
 	".sql":   "sql",
 	".proto": "protobuf",
+	// Infrastructure-as-code
+	".tf":     "terraform",
+	".tfvars": "terraform",
+	".hcl":    "hcl",
+	// Templating
+	".j2":    "jinja2",
+	".jinja": "jinja2",
+	".tmpl":  "gotemplate",
+	".tpl":   "gotemplate",
+	// Additional languages
+	".ex":  "elixir",
+	".exs": "elixir",
+	".zig": "zig",
+	".dart": "dart",
+	".nix": "nix",
 }
 
 var configFiles = map[string]bool{
@@ -160,12 +175,14 @@ func ClassifyFile(path string, size int64) FileInfo {
 		return info
 	}
 	if ext == ".yml" || ext == ".yaml" || ext == ".toml" || ext == ".ini" || ext == ".cfg" {
-		// CI/CD configs
-		if strings.Contains(dir, ".github") || strings.Contains(dir, ".gitlab") ||
-			strings.Contains(dir, ".circleci") {
-			info.Class = ClassConfig
-			return info
+		info.Class = ClassConfig
+		info.Language = "yaml"
+		if ext == ".toml" {
+			info.Language = "toml"
+		} else if ext == ".ini" || ext == ".cfg" {
+			info.Language = "ini"
 		}
+		return info
 	}
 
 	// Check documentation
