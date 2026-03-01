@@ -12,15 +12,24 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/tgeorge06/atlaskb/internal/llm"
 	"github.com/tgeorge06/atlaskb/internal/query"
 )
 
 type ChatSession struct {
-	ID        string        `json:"id"`
-	Title     string        `json:"title"`
-	Messages  []ChatMessage `json:"messages"`
-	CreatedAt string        `json:"created_at"`
-	UpdatedAt string        `json:"updated_at"`
+	ID           string            `json:"id"`
+	Title        string            `json:"title"`
+	Messages     []ChatMessage     `json:"messages"`
+	LastUsage    *ChatContextUsage `json:"last_usage,omitempty"`
+	CreatedAt    string            `json:"created_at"`
+	UpdatedAt    string            `json:"updated_at"`
+}
+
+type ChatContextUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+	ContextWindow    int `json:"context_window"`
 }
 
 type ChatSessionSummary struct {
@@ -298,8 +307,23 @@ func (s *Server) handleChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build conversation history from last 10 messages (user + assistant content only)
+	var history []llm.Message
+	allMsgs := session.Messages
+	// Exclude the just-appended user message (last element) — it goes into the prompt
+	priorMsgs := allMsgs[:len(allMsgs)-1]
+	start := 0
+	if len(priorMsgs) > 10 {
+		start = len(priorMsgs) - 10
+	}
+	for _, m := range priorMsgs[start:] {
+		if m.Role == "user" || m.Role == "assistant" {
+			history = append(history, llm.Message{Role: m.Role, Content: m.Content})
+		}
+	}
+
 	synth := query.NewSynthesizer(s.llm, s.cfg.Pipeline.SynthesisModel)
-	stream, err := synth.Synthesize(r.Context(), req.Question, results)
+	stream, err := synth.SynthesizeWithHistory(r.Context(), req.Question, results, history)
 	if err != nil {
 		fmt.Fprintf(w, "event: error\ndata: %q\n\n", err.Error())
 		flusher.Flush()
@@ -313,10 +337,30 @@ func (s *Server) handleChatMessage(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 			return
 		}
-		fullContent.WriteString(chunk.Text)
-		escaped, _ := json.Marshal(chunk.Text)
-		fmt.Fprintf(w, "event: chunk\ndata: %s\n\n", escaped)
-		flusher.Flush()
+		if chunk.Text != "" {
+			fullContent.WriteString(chunk.Text)
+			escaped, _ := json.Marshal(chunk.Text)
+			fmt.Fprintf(w, "event: chunk\ndata: %s\n\n", escaped)
+			flusher.Flush()
+		}
+		if chunk.Done && chunk.Usage != nil {
+			contextWindow, err := s.llm.GetContextWindow(r.Context(), s.cfg.Pipeline.SynthesisModel)
+			if err != nil || contextWindow <= 0 {
+				contextWindow = s.cfg.Pipeline.ContextWindow
+				if contextWindow <= 0 {
+					contextWindow = 131072
+				}
+			}
+			session.LastUsage = &ChatContextUsage{
+				PromptTokens:     chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens,
+				TotalTokens:      chunk.Usage.PromptTokens + chunk.Usage.CompletionTokens,
+				ContextWindow:    contextWindow,
+			}
+			usageData, _ := json.Marshal(session.LastUsage)
+			fmt.Fprintf(w, "event: usage\ndata: %s\n\n", usageData)
+			flusher.Flush()
+		}
 	}
 
 	// Save assistant message with full content and evidence

@@ -30,3 +30,7 @@ func (m *MockClient) CompleteStream(ctx context.Context, model string, system st
 	close(ch)
 	return ch, nil
 }
+
+func (m *MockClient) GetContextWindow(ctx context.Context, model string) (int, error) {
+	return 32768, nil
+}

@@ -14,10 +14,11 @@ import (
 )
 
 type OpenAIClient struct {
-	baseURL    string
-	apiKey     string
-	http       *http.Client
-	maxRetries int
+	baseURL           string
+	apiKey            string
+	http              *http.Client
+	maxRetries        int
+	contextWindowCache map[string]int
 }
 
 func NewOpenAIClient(baseURL, apiKey string) *OpenAIClient {
@@ -35,7 +36,12 @@ type chatRequest struct {
 	Messages       []chatMessage   `json:"messages"`
 	MaxTokens      int             `json:"max_tokens"`
 	Stream         bool            `json:"stream"`
+	StreamOptions  *streamOptions  `json:"stream_options,omitempty"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+}
+
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type responseFormat struct {
@@ -75,6 +81,10 @@ type chatStreamChunk struct {
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage,omitempty"`
 }
 
 func (c *OpenAIClient) buildMessages(system string, messages []Message) []chatMessage {
@@ -187,10 +197,11 @@ func (c *OpenAIClient) Complete(ctx context.Context, model string, system string
 
 func (c *OpenAIClient) CompleteStream(ctx context.Context, model string, system string, messages []Message, maxTokens int) (<-chan StreamChunk, error) {
 	reqBody := chatRequest{
-		Model:     model,
-		Messages:  c.buildMessages(system, messages),
-		MaxTokens: maxTokens,
-		Stream:    true,
+		Model:         model,
+		Messages:      c.buildMessages(system, messages),
+		MaxTokens:     maxTokens,
+		Stream:        true,
+		StreamOptions: &streamOptions{IncludeUsage: true},
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -220,6 +231,8 @@ func (c *OpenAIClient) CompleteStream(ctx context.Context, model string, system 
 		defer close(ch)
 		defer resp.Body.Close()
 
+		var lastUsage *StreamUsage
+
 		scanner := bufio.NewScanner(resp.Body)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -230,13 +243,20 @@ func (c *OpenAIClient) CompleteStream(ctx context.Context, model string, system 
 			data := strings.TrimPrefix(line, "data: ")
 
 			if data == "[DONE]" {
-				ch <- StreamChunk{Done: true}
+				ch <- StreamChunk{Done: true, Usage: lastUsage}
 				return
 			}
 
 			var chunk chatStreamChunk
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 				continue
+			}
+
+			if chunk.Usage != nil {
+				lastUsage = &StreamUsage{
+					PromptTokens:     chunk.Usage.PromptTokens,
+					CompletionTokens: chunk.Usage.CompletionTokens,
+				}
 			}
 
 			if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
@@ -250,4 +270,64 @@ func (c *OpenAIClient) CompleteStream(ctx context.Context, model string, system 
 	}()
 
 	return ch, nil
+}
+
+func (c *OpenAIClient) GetContextWindow(ctx context.Context, model string) (int, error) {
+	if v, ok := c.contextWindowCache[model]; ok {
+		return v, nil
+	}
+
+	url := c.baseURL + "/v1/models"
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return 0, fmt.Errorf("creating request: %w", err)
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("fetching models: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("reading response: %w", err)
+	}
+
+	var result struct {
+		Data []struct {
+			ID          string `json:"id"`
+			MaxModelLen int    `json:"max_model_len"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return 0, fmt.Errorf("parsing models response: %w", err)
+	}
+
+	for _, m := range result.Data {
+		if m.MaxModelLen > 0 {
+			if c.contextWindowCache == nil {
+				c.contextWindowCache = make(map[string]int)
+			}
+			c.contextWindowCache[m.ID] = m.MaxModelLen
+		}
+	}
+
+	if v, ok := c.contextWindowCache[model]; ok {
+		return v, nil
+	}
+
+	// If exact model name not found, return the first model's context window
+	if len(result.Data) > 0 && result.Data[0].MaxModelLen > 0 {
+		if c.contextWindowCache == nil {
+			c.contextWindowCache = make(map[string]int)
+		}
+		c.contextWindowCache[model] = result.Data[0].MaxModelLen
+		return result.Data[0].MaxModelLen, nil
+	}
+
+	return 0, fmt.Errorf("model %q not found in /v1/models response", model)
 }

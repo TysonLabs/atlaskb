@@ -191,6 +191,12 @@ export interface ChatSession {
   id: string;
   title: string;
   messages: ChatMessage[];
+  last_usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    context_window: number;
+  };
   created_at: string;
   updated_at: string;
 }

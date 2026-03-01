@@ -37,7 +37,7 @@ export function ChatMessageBubble({
 
   return (
     <div className="flex justify-start animate-message-in">
-      <div className="flex items-start gap-3 max-w-[85%]">
+      <div className="flex items-start gap-3 w-full">
         <div className="w-8 h-8 rounded-full bg-syn-magenta/20 flex items-center justify-center shrink-0 mt-0.5">
           <Bot size={14} className="text-syn-magenta" />
         </div>

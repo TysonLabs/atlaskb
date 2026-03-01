@@ -75,6 +75,7 @@ type PipelineConfig struct {
 	Concurrency       int      `toml:"concurrency"`
 	ExtractionModel   string   `toml:"extraction_model"`
 	SynthesisModel    string   `toml:"synthesis_model"`
+	ContextWindow     int      `toml:"context_window"`
 	GlobalExcludeDirs []string `toml:"global_exclude_dirs"`
 }
 
@@ -99,6 +100,7 @@ func DefaultConfig() Config {
 			Concurrency:     2,
 			ExtractionModel: "qwen/qwen3.5-35b-a3b",
 			SynthesisModel:  "qwen/qwen3.5-35b-a3b",
+			ContextWindow:   32768,
 			GlobalExcludeDirs: []string{
 				"tests", "test", "__tests__", "spec",
 				"testing", "testdata", "fixtures",

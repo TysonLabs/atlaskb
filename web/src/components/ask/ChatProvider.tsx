@@ -11,6 +11,13 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 import type { ChatSession, ChatSessionSummary, SearchResult } from "../../types";
 
+interface ContextUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  contextWindow: number;
+}
+
 interface ChatState {
   sessions: ChatSessionSummary[];
   activeSession: ChatSession | null;
@@ -19,6 +26,7 @@ interface ChatState {
   isStreaming: boolean;
   isLoading: boolean;
   error: string | null;
+  contextUsage: ContextUsage | null;
 }
 
 type ChatAction =
@@ -31,7 +39,8 @@ type ChatAction =
   | { type: "SET_STREAMING_EVIDENCE"; evidence: SearchResult[] }
   | { type: "STOP_STREAMING" }
   | { type: "ADD_USER_MESSAGE"; id: string; content: string; timestamp: string }
-  | { type: "FINALIZE_ASSISTANT_MESSAGE"; id: string; content: string; evidence: SearchResult[]; timestamp: string };
+  | { type: "FINALIZE_ASSISTANT_MESSAGE"; id: string; content: string; evidence: SearchResult[]; timestamp: string }
+  | { type: "SET_CONTEXT_USAGE"; usage: ContextUsage };
 
 const initialState: ChatState = {
   sessions: [],
@@ -41,14 +50,29 @@ const initialState: ChatState = {
   isStreaming: false,
   isLoading: false,
   error: null,
+  contextUsage: null,
 };
 
 function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case "SET_SESSIONS":
       return { ...state, sessions: action.sessions };
-    case "SET_ACTIVE_SESSION":
-      return { ...state, activeSession: action.session, error: null };
+    case "SET_ACTIVE_SESSION": {
+      const u = action.session?.last_usage;
+      return {
+        ...state,
+        activeSession: action.session,
+        error: null,
+        contextUsage: u
+          ? {
+              promptTokens: u.prompt_tokens,
+              completionTokens: u.completion_tokens,
+              totalTokens: u.total_tokens,
+              contextWindow: u.context_window,
+            }
+          : null,
+      };
+    }
     case "SET_LOADING":
       return { ...state, isLoading: action.loading };
     case "SET_ERROR":
@@ -95,6 +119,8 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
         },
       };
     }
+    case "SET_CONTEXT_USAGE":
+      return { ...state, contextUsage: action.usage };
     default:
       return state;
   }
@@ -204,6 +230,19 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             const text = JSON.parse(event.data);
             fullContent += text;
             dispatch({ type: "APPEND_STREAMING_CONTENT", text });
+          } catch { /* ignore */ }
+        } else if (event.event === "usage") {
+          try {
+            const usage = JSON.parse(event.data);
+            dispatch({
+              type: "SET_CONTEXT_USAGE",
+              usage: {
+                promptTokens: usage.prompt_tokens,
+                completionTokens: usage.completion_tokens,
+                totalTokens: usage.total_tokens,
+                contextWindow: usage.context_window,
+              },
+            });
           } catch { /* ignore */ }
         } else if (event.event === "error") {
           dispatch({ type: "SET_ERROR", error: event.data });
