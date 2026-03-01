@@ -315,6 +315,65 @@ func (s *EntityStore) ListDistinctPaths(ctx context.Context, repoID uuid.UUID) (
 	return paths, nil
 }
 
+type EntitySearchResult struct {
+	Items []Entity `json:"items"`
+	Total int      `json:"total"`
+}
+
+func (s *EntityStore) SearchByName(ctx context.Context, repoID *uuid.UUID, query, kind string, limit, offset int) (*EntitySearchResult, error) {
+	where := "WHERE 1=1"
+	args := []any{}
+	argIdx := 1
+
+	if repoID != nil {
+		where += fmt.Sprintf(" AND repo_id = $%d", argIdx)
+		args = append(args, *repoID)
+		argIdx++
+	}
+	if kind != "" {
+		where += fmt.Sprintf(" AND kind = $%d", argIdx)
+		args = append(args, kind)
+		argIdx++
+	}
+	if query != "" {
+		where += fmt.Sprintf(" AND (name ILIKE $%d OR qualified_name ILIKE $%d)", argIdx, argIdx)
+		args = append(args, "%"+query+"%")
+		argIdx++
+	}
+
+	var total int
+	countArgs := make([]any, len(args))
+	copy(countArgs, args)
+	err := s.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM entities "+where, countArgs...).Scan(&total)
+	if err != nil {
+		return nil, fmt.Errorf("counting entities: %w", err)
+	}
+
+	sql := fmt.Sprintf(
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		 FROM entities %s ORDER BY qualified_name LIMIT $%d OFFSET $%d`, where, argIdx, argIdx+1)
+	args = append(args, limit, offset)
+
+	rows, err := s.Pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("searching entities: %w", err)
+	}
+	defer rows.Close()
+
+	var entities []Entity
+	for rows.Next() {
+		var e Entity
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning entity: %w", err)
+		}
+		entities = append(entities, e)
+	}
+	if entities == nil {
+		entities = []Entity{}
+	}
+	return &EntitySearchResult{Items: entities, Total: total}, nil
+}
+
 // DeleteByPath deletes all entities (and cascading facts/relationships) for a given path in a repo.
 func (s *EntityStore) DeleteByPath(ctx context.Context, repoID uuid.UUID, path string) error {
 	// Delete facts and relationships first (entities FK-referenced by facts.entity_id and relationships.from/to)

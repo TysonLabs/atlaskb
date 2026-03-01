@@ -18,6 +18,32 @@ type Config struct {
 	LLM        LLMConfig        `toml:"llm"`
 	Embeddings EmbeddingsConfig `toml:"embeddings"`
 	Pipeline   PipelineConfig   `toml:"pipeline"`
+	Server     ServerConfig     `toml:"server"`
+	GitHub     GitHubConfig     `toml:"github"`
+}
+
+type GitHubConfig struct {
+	Token          string `toml:"token"`
+	APIURL         string `toml:"api_url"`
+	MaxPRs         int    `toml:"max_prs"`
+	PRBatchSize    int    `toml:"pr_batch_size"`
+	EnterpriseHost string `toml:"enterprise_host"`
+}
+
+type ServerConfig struct {
+	Port     int    `toml:"port"`
+	ChatsDir string `toml:"chats_dir"`
+}
+
+func (s ServerConfig) GetChatsDir() string {
+	if s.ChatsDir != "" {
+		return s.ChatsDir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".", DefaultConfigDir, "chats")
+	}
+	return filepath.Join(home, DefaultConfigDir, "chats")
 }
 
 type DatabaseConfig struct {
@@ -46,9 +72,10 @@ type EmbeddingsConfig struct {
 }
 
 type PipelineConfig struct {
-	Concurrency    int    `toml:"concurrency"`
-	ExtractionModel string `toml:"extraction_model"`
-	SynthesisModel  string `toml:"synthesis_model"`
+	Concurrency       int      `toml:"concurrency"`
+	ExtractionModel   string   `toml:"extraction_model"`
+	SynthesisModel    string   `toml:"synthesis_model"`
+	GlobalExcludeDirs []string `toml:"global_exclude_dirs"`
 }
 
 func DefaultConfig() Config {
@@ -72,6 +99,12 @@ func DefaultConfig() Config {
 			Concurrency:     2,
 			ExtractionModel: "qwen/qwen3.5-35b-a3b",
 			SynthesisModel:  "qwen/qwen3.5-35b-a3b",
+			GlobalExcludeDirs: []string{
+				"tests", "test", "__tests__", "spec",
+				"testing", "testdata", "fixtures",
+				"e2e", "cypress", "playwright",
+				"migrations",
+			},
 		},
 	}
 }
@@ -193,5 +226,26 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("ATLASKB_EMBEDDINGS_API_KEY"); v != "" {
 		cfg.Embeddings.APIKey = v
+	}
+
+	// GitHub token: ATLASKB_GITHUB_TOKEN takes priority, then GITHUB_TOKEN
+	if v := os.Getenv("ATLASKB_GITHUB_TOKEN"); v != "" {
+		cfg.GitHub.Token = v
+	} else if v := os.Getenv("GITHUB_TOKEN"); v != "" && cfg.GitHub.Token == "" {
+		cfg.GitHub.Token = v
+	}
+	if v := os.Getenv("ATLASKB_GITHUB_API_URL"); v != "" {
+		cfg.GitHub.APIURL = v
+	}
+
+	// Apply defaults for GitHub config
+	if cfg.GitHub.APIURL == "" {
+		cfg.GitHub.APIURL = "https://api.github.com/graphql"
+	}
+	if cfg.GitHub.MaxPRs == 0 {
+		cfg.GitHub.MaxPRs = 200
+	}
+	if cfg.GitHub.PRBatchSize == 0 {
+		cfg.GitHub.PRBatchSize = 10
 	}
 }

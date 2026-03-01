@@ -13,22 +13,34 @@ import (
 	"github.com/pgvector/pgvector-go"
 	"github.com/tgeorge06/atlaskb/internal/embeddings"
 	gitpkg "github.com/tgeorge06/atlaskb/internal/git"
+	ghpkg "github.com/tgeorge06/atlaskb/internal/github"
 	"github.com/tgeorge06/atlaskb/internal/llm"
 	"github.com/tgeorge06/atlaskb/internal/models"
 )
 
 type OrchestratorConfig struct {
-	RepoPath        string
-	Force           bool
-	DryRun          bool
-	Concurrency     int
-	ExtractionModel string
-	SynthesisModel  string
-	Pool            *pgxpool.Pool
-	LLM             llm.Client
-	Embedder        embeddings.Client
-	Verbose         bool
-	Phases          []string // If non-empty, only run these phases (e.g. ["phase4"])
+	RepoPath          string
+	Force             bool
+	DryRun            bool
+	Concurrency       int
+	ExtractionModel   string
+	SynthesisModel    string
+	Pool              *pgxpool.Pool
+	LLM               llm.Client
+	Embedder          embeddings.Client
+	Verbose           bool
+	Phases            []string // If non-empty, only run these phases (e.g. ["phase4"])
+	ProgressFunc      func(msg string) // Optional callback for progress updates
+	GlobalExcludeDirs []string // Global dirs to exclude (from config)
+	GitHubClient      *ghpkg.Client    // nil if no GitHub token configured
+	GitHubMaxPRs      int
+	GitHubPRBatchSize int
+}
+
+func (cfg *OrchestratorConfig) progress(msg string) {
+	if cfg.ProgressFunc != nil {
+		cfg.ProgressFunc(msg)
+	}
 }
 
 type OrchestratorResult struct {
@@ -141,17 +153,22 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		log.Println("[force] Done, re-extracting from scratch")
 	}
 
+	// Merge global + per-repo exclude dirs
+	excludeDirs := mergeExcludeDirs(cfg.GlobalExcludeDirs, repo.ExcludeDirs)
+
 	// Phase 1: Structural inventory (always runs unless phases filter excludes it)
 	var manifest *Manifest
 	if shouldRunPhase(cfg.Phases, "phase1") || len(cfg.Phases) == 0 {
 		fmt.Println("Phase 1: Structural inventory...")
-		manifest, err = RunPhase1(repoInfo.RootPath)
+		cfg.progress("Phase 1: Structural inventory...")
+		manifest, err = RunPhase1(repoInfo.RootPath, excludeDirs)
 		if err != nil {
 			return nil, fmt.Errorf("phase 1: %w", err)
 		}
 
 		fmt.Printf("  Files: %d total, %d analyzable\n", manifest.Stats.TotalFiles, manifest.Stats.AnalyzableFiles)
 		fmt.Printf("  Stack: %v\n", manifest.Stack.Languages)
+		cfg.progress(fmt.Sprintf("Phase 1 complete: %d files (%d analyzable), stack: %v", manifest.Stats.TotalFiles, manifest.Stats.AnalyzableFiles, manifest.Stack.Languages))
 
 		indexingRun.FilesTotal = models.Ptr(manifest.Stats.TotalFiles)
 
@@ -281,6 +298,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	var entityRoster []EntityEntry
 	if shouldRunPhase(cfg.Phases, "phase1.5") || shouldRunPhase(cfg.Phases, "phase2") || len(cfg.Phases) == 0 {
 		fmt.Println("Phase 1.5: Extracting structural symbols...")
+		cfg.progress("Phase 1.5: Extracting structural symbols...")
 		symbols, ctagsErr := RunCtags(cfg.RepoPath)
 		if ctagsErr != nil {
 			fmt.Printf("  Warning: ctags extraction failed: %v\n", ctagsErr)
@@ -309,23 +327,25 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	if shouldRunPhase(cfg.Phases, "phase2") {
 		if manifest == nil {
 			// Need manifest for phase2 even if phase1 was skipped
-			manifest, err = RunPhase1(repoInfo.RootPath)
+			manifest, err = RunPhase1(repoInfo.RootPath, excludeDirs)
 			if err != nil {
 				return nil, fmt.Errorf("phase 1 (for phase 2): %w", err)
 			}
 		}
 
 		fmt.Println("Phase 2: File analysis...")
+		cfg.progress("Phase 2: LLM file analysis...")
 		phase2Stats, err := RunPhase2(ctx, Phase2Config{
-			RepoID:      repo.ID,
-			RepoName:    repoName,
-			RepoPath:    repoInfo.RootPath,
-			Manifest:    manifest,
-			Model:       cfg.ExtractionModel,
-			Concurrency: cfg.Concurrency,
-			Pool:        cfg.Pool,
-			LLM:         cfg.LLM,
-			Roster:      entityRoster,
+			RepoID:       repo.ID,
+			RepoName:     repoName,
+			RepoPath:     repoInfo.RootPath,
+			Manifest:     manifest,
+			Model:        cfg.ExtractionModel,
+			Concurrency:  cfg.Concurrency,
+			Pool:         cfg.Pool,
+			LLM:          cfg.LLM,
+			Roster:       entityRoster,
+			ProgressFunc: cfg.ProgressFunc,
 		})
 		if err != nil {
 			return result, fmt.Errorf("phase 2: %w", err)
@@ -333,6 +353,8 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		result.Phase2Stats = phase2Stats
 		fmt.Printf("  Processed: %d files, Skipped: %d, Entities: %d, Facts: %d\n",
 			phase2Stats.FilesProcessed, phase2Stats.FilesSkipped, phase2Stats.EntitiesCreated, phase2Stats.FactsCreated)
+		cfg.progress(fmt.Sprintf("Phase 2 complete: %d files analyzed, %d skipped, %d entities, %d facts",
+			phase2Stats.FilesProcessed, phase2Stats.FilesSkipped, phase2Stats.EntitiesCreated, phase2Stats.FactsCreated))
 
 		indexingRun.FilesAnalyzed = models.Ptr(phase2Stats.FilesProcessed)
 		indexingRun.FilesSkipped = models.Ptr(phase2Stats.FilesSkipped)
@@ -353,6 +375,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	// skip later phases since the data is already up to date.
 	if !phase2Processed && runMode == "incremental" && len(cfg.Phases) == 0 {
 		fmt.Println("\nNo files changed — knowledge base is up to date.")
+		cfg.progress("No files changed — knowledge base is up to date.")
 		indexingRun.DurationMS = models.Ptr(time.Since(start).Milliseconds())
 		runStore.Complete(ctx, indexingRun)
 		result.Duration = time.Since(start)
@@ -362,6 +385,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	// Phase 2.5: Backfill orphan entities (entities with no facts)
 	if shouldRunPhase(cfg.Phases, "backfill") || shouldRunPhase(cfg.Phases, "phase2") {
 		fmt.Println("Phase 2.5: Backfill orphan entities...")
+		cfg.progress("Phase 2.5: Backfilling orphan entities...")
 		backfillStats, err := RunBackfill(ctx, BackfillConfig{
 			RepoID:      repo.ID,
 			RepoName:    repoName,
@@ -392,6 +416,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	// Git log analysis
 	if shouldRunPhase(cfg.Phases, "gitlog") || shouldRunPhase(cfg.Phases, "phase2") {
 		fmt.Println("Git log analysis...")
+		cfg.progress("Analyzing git history...")
 		if err := RunGitLogAnalysis(ctx, GitLogConfig{
 			RepoID:   repo.ID,
 			RepoName: repoName,
@@ -401,6 +426,37 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 			LLM:      cfg.LLM,
 		}); err != nil {
 			fmt.Printf("  Warning: git log analysis failed: %v\n", err)
+		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		fmt.Println("\nInterrupted — progress saved. Re-run to continue.")
+		return result, nil
+	}
+
+	// Phase 3: GitHub PR/issue mining
+	if shouldRunPhase(cfg.Phases, "phase3") || shouldRunPhase(cfg.Phases, "phase2") || len(cfg.Phases) == 0 {
+		fmt.Println("Phase 3: GitHub PR/issue mining...")
+		cfg.progress("Phase 3: GitHub PR/issue mining...")
+
+		remoteURL := ""
+		if repo.RemoteURL != nil {
+			remoteURL = *repo.RemoteURL
+		}
+
+		if err := RunPhase3(ctx, Phase3Config{
+			RepoID:       repo.ID,
+			RepoName:     repoName,
+			RemoteURL:    remoteURL,
+			Model:        cfg.ExtractionModel,
+			Pool:         cfg.Pool,
+			LLM:          cfg.LLM,
+			GitHub:       cfg.GitHubClient,
+			MaxPRs:       cfg.GitHubMaxPRs,
+			PRBatchSize:  cfg.GitHubPRBatchSize,
+			ProgressFunc: cfg.ProgressFunc,
+		}); err != nil {
+			fmt.Printf("  Warning: Phase 3 GitHub PR mining failed: %v\n", err)
 		}
 	}
 
@@ -422,6 +478,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		}
 
 		fmt.Println("Phase 4: Cross-module synthesis...")
+		cfg.progress("Phase 4: Cross-module LLM synthesis...")
 		if err := RunPhase4(ctx, Phase4Config{
 			RepoID:   repo.ID,
 			RepoName: repoName,
@@ -450,6 +507,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		}
 
 		fmt.Println("Phase 5: Repository summary...")
+		cfg.progress("Phase 5: Generating repository summary...")
 		if err := RunPhase5(ctx, Phase5Config{
 			RepoID:   repo.ID,
 			RepoName: repoName,
@@ -469,6 +527,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	// Generate embeddings for all facts
 	if shouldRunPhase(cfg.Phases, "embedding") || len(cfg.Phases) == 0 {
 		fmt.Println("Generating embeddings...")
+		cfg.progress("Generating embeddings...")
 		if err := generateEmbeddings(ctx, cfg.Pool, cfg.Embedder, repo.ID); err != nil {
 			fmt.Printf("  Warning: embedding generation failed: %v\n", err)
 		}
@@ -476,6 +535,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 
 	// Compute quality score
 	fmt.Println("Computing quality score...")
+	cfg.progress("Computing quality score...")
 	qs, err := ComputeQuality(ctx, cfg.Pool, repo.ID)
 	if err != nil {
 		fmt.Printf("  Warning: quality score computation failed: %v\n", err)
@@ -484,6 +544,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		fmt.Printf("  %s\n", FormatQualityScore(qs))
 		fmt.Println()
 		fmt.Print(FormatQualityDetails(qs))
+		cfg.progress(fmt.Sprintf("Quality: %.0f%%", qs.Overall*100))
 
 		indexingRun.QualityOverall = models.Ptr(qs.Overall)
 		indexingRun.QualityEntityCov = models.Ptr(qs.EntityCoverage)
@@ -568,6 +629,24 @@ func extractRepoName(info *gitpkg.RepoInfo) string {
 		return parts[len(parts)-1]
 	}
 	return "unknown"
+}
+
+func mergeExcludeDirs(global, perRepo []string) []string {
+	seen := make(map[string]bool)
+	var merged []string
+	for _, d := range global {
+		if !seen[d] {
+			seen[d] = true
+			merged = append(merged, d)
+		}
+	}
+	for _, d := range perRepo {
+		if !seen[d] {
+			seen[d] = true
+			merged = append(merged, d)
+		}
+	}
+	return merged
 }
 
 func splitPath(path string) []string {

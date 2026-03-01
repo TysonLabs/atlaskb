@@ -106,88 +106,157 @@ NEVER include the repo name, file path, or "src" as a prefix.
   defining file, not re-export files.
 
 FACT RULES:
-- Extract at least TWO facts per entity: one "what" (behavior/capability) and one
-  "how" (implementation detail, pattern used, or delegation strategy).
-- Extract a "why" fact per entity if rationale is apparent from comments or naming.
+- Extract 4–10 facts per entity. More complex entities (services, workers, orchestrators,
+  main functions) should have closer to 10. Simple pass-through methods can have 4.
+- REQUIRED dimensions per entity:
+  - "what": at least 1 — what the entity does, its purpose
+  - "how": at least 2 — implementation details, patterns, delegation, algorithms
+  - "why": at least 1 if rationale is apparent from comments, naming, or design choices
+  - "when": extract timing/scheduling facts — polling intervals, timer durations, TTLs,
+    cron schedules, retry delays, timeout values, reconciliation frequencies.
+    Example: "Reconciles company worker configurations every 10 minutes via a ticker loop"
+- OPERATIONAL DETAILS — actively look for and extract:
+  - Numeric constants: buffer sizes, pool sizes, concurrency limits, batch sizes, max retries
+  - Timeouts and intervals: HTTP timeouts, connection timeouts, polling intervals, backoff durations
+  - Thresholds: circuit breaker thresholds, rate limits, queue depth limits, health check intervals
+  - Default configuration values: default ports, default queue names, default prefetch counts
+  Example: "Uses a ProcessPoolExecutor with max_workers=4 for CPU-bound PII detection"
+  Example: "AMQP prefetch_count defaults to 5, matching the concurrency setting"
+  Example: "HTTP client timeout is set to 60 seconds with a max of 24 connections"
+- LIFECYCLE PATTERNS — extract startup/shutdown/reconciliation sequences:
+  - Init → configure → run → cleanup sequences
+  - Worker lifecycle: spawn → poll → process → sleep → repeat
+  - Recovery flows: detect failure → pause → retry → resume
+  Example: "Worker Manager lifecycle: load AppConfig → diff company list → spawn new workers → stop removed workers → sleep 10 min → repeat"
+- STATE MACHINES — if an entity transitions through states, document the state transitions
+  as facts. Example: "Job states: pending → processing → completed|failed, with failed jobs
+  retried up to 3 times before moving to dead-letter queue"
 - Flag tech debt (TODOs, FIXMEs, deprecated patterns, missing tests, hardcoded values)
   as category "debt". Flag risks (security, scalability, missing validation) as "risk".
 - Every TODO, FIXME, and NOTE comment MUST become a fact with category "debt" or "risk".
-- Prefer specific claims over vague ones.
+- COMMENTS ARE GOLD — extract facts from code comments, docstrings, and inline notes.
+  Comments often explain "why" decisions were made and operational constraints.
+- CONFIG FILES — if the file is a config file (YAML, TOML, INI, JSON, .env), extract
+  every meaningful configuration key as a fact with its default value and purpose.
+- Prefer specific claims with concrete values over vague descriptions.
+  BAD:  "Uses a retry mechanism"
+  GOOD: "Retries failed deliveries up to 5 times with exponential backoff (1s, 2s, 4s, 8s, 16s)"
 
 ## FEW-SHOT EXAMPLE
 
 Given this Go file:
 ` + "```" + `
-package tasks
+package worker
 
-type TaskStore interface {
-    GetTask(ctx context.Context, id string) (*Task, error)
-    ListTasks(ctx context.Context) ([]*Task, error)
+import "time"
+
+const (
+    reconcileInterval = 10 * time.Minute
+    maxRetries        = 3
+    httpTimeout       = 30 * time.Second
+)
+
+// Manager manages per-company worker goroutines.
+// It polls AppConfig for the active company list and reconciles workers accordingly.
+type Manager struct {
+    config   *AppConfig
+    workers  map[string]*Worker
+    client   *http.Client
+    logger   *log.Logger
 }
 
-type TaskHandler struct {
-    store TaskStore
-    logger *log.Logger
+func NewManager(cfg *AppConfig, logger *log.Logger) *Manager {
+    return &Manager{
+        config:  cfg,
+        workers: make(map[string]*Worker),
+        client:  &http.Client{Timeout: httpTimeout},
+        logger:  logger,
+    }
 }
 
-func NewTaskHandler(store TaskStore, logger *log.Logger) *TaskHandler {
-    return &TaskHandler{store: store, logger: logger}
+// Run starts the reconciliation loop. It runs until ctx is cancelled.
+func (m *Manager) Run(ctx context.Context) error {
+    // Initial reconciliation
+    if err := m.reconcile(ctx); err != nil {
+        m.logger.Printf("initial reconcile failed: %%v", err)
+    }
+    ticker := time.NewTicker(reconcileInterval)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-ctx.Done():
+            m.shutdown()
+            return ctx.Err()
+        case <-ticker.C:
+            if err := m.reconcile(ctx); err != nil {
+                m.logger.Printf("reconcile error: %%v", err)
+            }
+        }
+    }
 }
 
-func (h *TaskHandler) GetTask(ctx context.Context, id string) (*Task, error) {
-    return h.store.GetTask(ctx, id)
+// reconcile diffs the AppConfig company list against running workers.
+func (m *Manager) reconcile(ctx context.Context) error {
+    companies, err := m.config.FetchCompanies(ctx)
+    if err != nil {
+        return err
+    }
+    // Spawn new, stop removed
+    for _, c := range companies {
+        if _, ok := m.workers[c.ID]; !ok {
+            m.workers[c.ID] = spawnWorker(c, m.client)
+        }
+    }
+    // TODO: add graceful drain before stopping removed workers
+    return nil
 }
 
-func (h *TaskHandler) ListTasks(ctx context.Context) ([]*Task, error) {
-    return h.store.ListTasks(ctx)
-}
-
-func (h *TaskHandler) DeleteTask(ctx context.Context, id string) error {
-    h.logger.Printf("deleting task %%s", id)
-    return h.store.Delete(ctx, id)
-}
-
-func sanitizeInput(s string) string {
-    return strings.TrimSpace(s)
+func (m *Manager) shutdown() {
+    for _, w := range m.workers {
+        w.Stop()
+    }
 }
 ` + "```" + `
 
 Perfect extraction:
 {
-  "file_summary": "Defines TaskHandler which implements task CRUD operations by delegating to a TaskStore interface.",
+  "file_summary": "Defines Manager which manages per-company worker goroutines by polling AppConfig on a 10-minute interval and reconciling the active company set.",
   "entities": [
-    {"kind": "type", "name": "TaskStore", "qualified_name": "tasks::TaskStore", "summary": "Interface defining task storage operations", "capabilities": ["get task by ID", "list all tasks"], "assumptions": []},
-    {"kind": "type", "name": "TaskHandler", "qualified_name": "tasks::TaskHandler", "summary": "Handles task operations by delegating to a TaskStore", "capabilities": ["get task", "list tasks", "delete task with logging"], "assumptions": ["TaskStore implementation is injected at construction"]},
-    {"kind": "function", "name": "NewTaskHandler", "qualified_name": "tasks::NewTaskHandler", "summary": "Constructor for TaskHandler", "capabilities": ["create TaskHandler with store and logger"], "assumptions": []},
-    {"kind": "function", "name": "GetTask", "qualified_name": "tasks::TaskHandler.GetTask", "summary": "Returns a task by ID, delegating to the store", "capabilities": ["retrieve single task"], "assumptions": []},
-    {"kind": "function", "name": "ListTasks", "qualified_name": "tasks::TaskHandler.ListTasks", "summary": "Returns all tasks, delegating to the store", "capabilities": ["retrieve all tasks"], "assumptions": []},
-    {"kind": "function", "name": "DeleteTask", "qualified_name": "tasks::TaskHandler.DeleteTask", "summary": "Deletes a task by ID with logging", "capabilities": ["delete task", "log deletion"], "assumptions": []}
+    {"kind": "type", "name": "Manager", "qualified_name": "worker::Manager", "summary": "Manages per-company worker goroutines, polling AppConfig and reconciling on a timer", "capabilities": ["reconcile company workers", "spawn new workers", "stop removed workers", "graceful shutdown"], "assumptions": ["AppConfig provides the authoritative company list", "Each company gets exactly one worker goroutine"]},
+    {"kind": "function", "name": "NewManager", "qualified_name": "worker::NewManager", "summary": "Constructor for Manager", "capabilities": ["create Manager with config, empty worker map, and HTTP client"], "assumptions": []},
+    {"kind": "function", "name": "Run", "qualified_name": "worker::Manager.Run", "summary": "Starts the reconciliation loop until context is cancelled", "capabilities": ["periodic reconciliation", "graceful shutdown on context cancellation"], "assumptions": ["Context cancellation signals shutdown"]}
   ],
   "facts": [
-    {"entity_name": "tasks::TaskStore", "claim": "Defines two operations: GetTask (by ID) and ListTasks (all)", "dimension": "what", "category": "behavior", "confidence": "high"},
-    {"entity_name": "tasks::TaskStore", "claim": "Interface with no implementation in this file", "dimension": "how", "category": "pattern", "confidence": "high"},
-    {"entity_name": "tasks::TaskHandler", "claim": "Handles task CRUD by delegating to a TaskStore", "dimension": "what", "category": "behavior", "confidence": "high"},
-    {"entity_name": "tasks::TaskHandler", "claim": "Uses unexported helper sanitizeInput for input cleaning", "dimension": "how", "category": "behavior", "confidence": "medium"},
-    {"entity_name": "tasks::TaskHandler.GetTask", "claim": "Pure pass-through to store.GetTask with no additional logic", "dimension": "how", "category": "behavior", "confidence": "high"},
-    {"entity_name": "tasks::TaskHandler.GetTask", "claim": "Retrieves a single task by its ID", "dimension": "what", "category": "behavior", "confidence": "high"},
-    {"entity_name": "tasks::TaskHandler.ListTasks", "claim": "Pure pass-through to store.ListTasks with no additional logic", "dimension": "how", "category": "behavior", "confidence": "high"},
-    {"entity_name": "tasks::TaskHandler.DeleteTask", "claim": "Logs deletion before delegating to store", "dimension": "how", "category": "behavior", "confidence": "high"},
-    {"entity_name": "tasks::TaskHandler.DeleteTask", "claim": "Only method that adds behavior (logging) beyond pure delegation", "dimension": "why", "category": "pattern", "confidence": "medium"}
+    {"entity_name": "worker::Manager", "claim": "Manages per-company worker goroutines by polling AppConfig and reconciling the active set", "dimension": "what", "category": "behavior", "confidence": "high"},
+    {"entity_name": "worker::Manager", "claim": "Uses a map[string]*Worker keyed by company ID to track running workers", "dimension": "how", "category": "behavior", "confidence": "high"},
+    {"entity_name": "worker::Manager", "claim": "HTTP client has a 30-second timeout (httpTimeout constant)", "dimension": "how", "category": "constraint", "confidence": "high"},
+    {"entity_name": "worker::Manager", "claim": "maxRetries constant is set to 3", "dimension": "how", "category": "constraint", "confidence": "high"},
+    {"entity_name": "worker::Manager", "claim": "Designed so each company has exactly one worker goroutine — no fan-out per company", "dimension": "why", "category": "pattern", "confidence": "medium"},
+    {"entity_name": "worker::Manager", "claim": "TODO: add graceful drain before stopping removed workers — currently workers are stopped immediately", "dimension": "how", "category": "debt", "confidence": "high"},
+    {"entity_name": "worker::Manager.Run", "claim": "Runs a reconciliation loop using time.NewTicker with a 10-minute interval (reconcileInterval)", "dimension": "when", "category": "behavior", "confidence": "high"},
+    {"entity_name": "worker::Manager.Run", "claim": "Lifecycle: initial reconcile → ticker loop → reconcile on tick → shutdown on context cancel", "dimension": "how", "category": "pattern", "confidence": "high"},
+    {"entity_name": "worker::Manager.Run", "claim": "Performs an immediate reconciliation on startup before entering the ticker loop", "dimension": "how", "category": "behavior", "confidence": "high"},
+    {"entity_name": "worker::Manager.Run", "claim": "Logs reconciliation errors but does not halt the loop — errors are non-fatal", "dimension": "how", "category": "pattern", "confidence": "high"},
+    {"entity_name": "worker::Manager.Run", "claim": "Calls m.shutdown() on context cancellation to stop all workers", "dimension": "how", "category": "behavior", "confidence": "high"},
+    {"entity_name": "worker::NewManager", "claim": "Initializes an empty worker map and configures the HTTP client with httpTimeout", "dimension": "what", "category": "behavior", "confidence": "high"},
+    {"entity_name": "worker::NewManager", "claim": "Uses dependency injection — accepts *AppConfig and *log.Logger", "dimension": "how", "category": "pattern", "confidence": "high"},
+    {"entity_name": "worker::NewManager", "claim": "Constructor creates the http.Client inline rather than accepting it as a parameter", "dimension": "how", "category": "behavior", "confidence": "high"},
+    {"entity_name": "worker::NewManager", "claim": "Does not perform any validation on the config parameter", "dimension": "how", "category": "risk", "confidence": "medium"}
   ],
   "relationships": [
-    {"from": "tasks::TaskHandler", "to": "tasks::TaskStore", "kind": "depends_on", "description": "TaskHandler delegates all storage operations to TaskStore", "strength": "strong"},
-    {"from": "tasks::NewTaskHandler", "to": "tasks::TaskHandler", "kind": "produces", "description": "Constructor that creates TaskHandler", "strength": "strong"},
-    {"from": "tasks::TaskHandler", "to": "tasks::TaskHandler.GetTask", "kind": "owns", "description": "GetTask is a method on TaskHandler", "strength": "strong"},
-    {"from": "tasks::TaskHandler", "to": "tasks::TaskHandler.ListTasks", "kind": "owns", "description": "ListTasks is a method on TaskHandler", "strength": "strong"},
-    {"from": "tasks::TaskHandler", "to": "tasks::TaskHandler.DeleteTask", "kind": "owns", "description": "DeleteTask is a method on TaskHandler", "strength": "strong"},
-    {"from": "tasks::TaskHandler.GetTask", "to": "tasks::TaskStore", "kind": "calls", "description": "Delegates to store.GetTask", "strength": "strong"},
-    {"from": "tasks::TaskHandler.DeleteTask", "to": "tasks::TaskStore", "kind": "calls", "description": "Delegates to store.Delete", "strength": "strong"}
+    {"from": "worker::Manager", "to": "worker::Manager.Run", "kind": "owns", "description": "Run is a method on Manager", "strength": "strong"},
+    {"from": "worker::NewManager", "to": "worker::Manager", "kind": "produces", "description": "Constructor that creates Manager", "strength": "strong"},
+    {"from": "worker::Manager.Run", "to": "worker::Manager", "kind": "calls", "description": "Run calls m.reconcile and m.shutdown", "strength": "strong"}
   ]
 }
 
-Note: sanitizeInput is unexported (lowercase) so it is NOT an entity — it's mentioned as a fact on TaskHandler instead. All exported methods including simple pass-throughs (GetTask, ListTasks) are extracted as entities. TaskStore is an interface so its methods are described as facts, not separate entities.
+Note: sanitizeInput-style unexported functions are NOT entities — they're mentioned as facts on their parent. reconcile and shutdown are unexported so they become facts on Manager and Manager.Run, not separate entities. The example shows 4-5 facts per entity including timing ("when"), lifecycle patterns, numeric constants (httpTimeout=30s, reconcileInterval=10min, maxRetries=3), and a TODO as tech debt.
 
-CRITICAL: Each entity MUST have at least 2 facts AND at least 1 relationship. If you cannot think of 2 facts for an entity, you should not create the entity. Count your facts and relationships before finalizing.
+CRITICAL: Each entity MUST have at least 4 facts AND at least 1 relationship.
+- Simple entities (pass-through methods, constructors): 4 facts minimum
+- Complex entities (services, workers, main functions, orchestrators): 6-10 facts
+- If you cannot think of 4 facts for an entity, you should not create the entity.
+- Count your facts and relationships before finalizing.
 
 RELATIONSHIP RULES — EVERY entity MUST have at least 1 relationship:
 - METHODS: Always emit "owns" from the struct type to each method entity. This is the easiest
@@ -297,6 +366,67 @@ Respond with JSON in this exact schema:
   "risks_and_debt": ["list of identified risks or tech debt"],
   "key_integration_points": ["list of external dependencies and how they're used"]
 }`, repoName, entitySummaries, architecturalFacts, decisions)
+}
+
+const systemPromptPhase3 = `You are a code historian extracting architectural decisions from GitHub pull request discussions. PR descriptions and review comments are the richest source of "why" — they capture the rationale, alternatives considered, and tradeoffs that are rarely documented in code.
+
+CRITICAL RULES:
+- You MUST respond with valid JSON only — no markdown fences, no commentary outside the JSON.
+- Your entire response must start with { and end with }.
+- Do NOT output "..." or ellipsis as values. Use real content or empty strings/arrays.
+- Do NOT include thinking, reasoning, or explanation text before or after the JSON.`
+
+func Phase3Prompt(repoName string, prsText string, entityRoster string) string {
+	return fmt.Sprintf(`Analyze the following merged pull requests from the "%s" repository. Extract architectural decisions, rationale, and "why" dimension facts from PR descriptions and review discussions.
+
+## Known Entities
+%s
+
+## Pull Requests
+%s
+
+Respond with JSON in this exact schema:
+{
+  "facts": [
+    {
+      "entity_name": "qualified_name of the affected entity (or repo name if repo-level)",
+      "claim": "what was decided/changed and why",
+      "dimension": "why|when|what|how",
+      "category": "behavior|constraint|pattern|convention|debt|risk",
+      "confidence": "high|medium|low"
+    }
+  ],
+  "decisions": [
+    {
+      "summary": "one-line decision description",
+      "description": "fuller context from the PR description",
+      "rationale": "why this decision was made (from PR body, reviews, or issue context)",
+      "alternatives": [
+        {
+          "description": "an alternative that was considered",
+          "rejected_because": "why it was rejected"
+        }
+      ],
+      "tradeoffs": ["tradeoff 1", "tradeoff 2"],
+      "pr_number": 42,
+      "made_at": "ISO timestamp of PR merge"
+    }
+  ]
+}
+
+FACT RULES:
+- Prefer "why" and "when" dimensions — these are the hardest to extract from code alone.
+- For entity_name, use exact qualified_names from the entity roster above when possible.
+- If the fact is repo-level, use the repository name "%s".
+- Extract rationale from PR descriptions, review comments, and linked issue context.
+- Operational decisions (performance, scaling, security) are high value.
+
+DECISION RULES:
+- PRs that add/change architecture, switch libraries, modify data models, or change APIs represent DECISIONS.
+- Extract alternatives from review discussions where reviewers suggested different approaches.
+- Extract tradeoffs when PR authors explain what they gained vs. what they gave up.
+- Include the pr_number field for provenance tracking.
+- Every PR batch should yield at least 1-2 decisions unless all PRs are trivial.`, repoName, entityRoster, prsText, repoName)
 }
 
 const systemPromptGitLog = `You are a code historian. You analyze git commit history to extract the "when" and "why" dimensions of a codebase's evolution.

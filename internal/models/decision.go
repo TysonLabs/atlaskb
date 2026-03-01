@@ -114,6 +114,17 @@ func (s *DecisionStore) ListByEntity(ctx context.Context, entityID uuid.UUID, li
 	return decisions, nil
 }
 
+func (s *DecisionStore) CountByRepo(ctx context.Context, repoID uuid.UUID) (int, error) {
+	var count int
+	err := s.Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM decisions WHERE repo_id = $1`, repoID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting decisions: %w", err)
+	}
+	return count, nil
+}
+
 func (s *DecisionStore) ListByRepo(ctx context.Context, repoID uuid.UUID) ([]Decision, error) {
 	rows, err := s.Pool.Query(ctx,
 		`SELECT id, repo_id, summary, description, rationale, alternatives, tradeoffs, provenance, made_at, still_valid, created_at, updated_at

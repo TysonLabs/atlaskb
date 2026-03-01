@@ -25,5 +25,9 @@ Thumbs.db
 .atlaskb/
 
 # Build
-dist/
 bin/
+
+# Frontend
+web/node_modules/
+web/dist/*
+!web/dist/.gitkeep

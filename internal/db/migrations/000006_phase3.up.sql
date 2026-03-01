@@ -1,0 +1,1 @@
+ALTER TYPE job_phase ADD VALUE IF NOT EXISTS 'phase3';

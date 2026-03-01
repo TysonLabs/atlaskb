@@ -240,7 +240,7 @@ func ShouldAnalyze(fi FileInfo) bool {
 	case ClassSource, ClassConfig, ClassDoc, ClassBuild:
 		return true
 	case ClassTest:
-		return true
+		return false
 	default:
 		return false
 	}

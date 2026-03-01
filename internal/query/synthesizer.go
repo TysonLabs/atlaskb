@@ -19,13 +19,12 @@ func NewSynthesizer(client llm.Client, model string) *Synthesizer {
 
 const answerSystemPrompt = `You are AtlasKB, a knowledge base assistant that answers questions about codebases.
 
-You have access to a knowledge graph of facts extracted from repositories. Answer the user's question using ONLY the provided context. If the context doesn't contain enough information, say so honestly.
+You have access to a knowledge graph of facts extracted from repositories. Answer the user's question using ONLY the provided context. Answer confidently using the provided context. If certain topics aren't covered in the context, simply omit them rather than noting their absence. Focus on what IS in the context.
 
 Rules:
 - Ground every claim in the provided facts
 - Cite sources using [entity_name] notation
 - Be specific and precise
-- If you're uncertain, express the uncertainty
 - Format your answer in clear, readable prose`
 
 func (s *Synthesizer) Synthesize(ctx context.Context, question string, results []SearchResult) (<-chan llm.StreamChunk, error) {
@@ -36,6 +35,9 @@ func (s *Synthesizer) Synthesize(ctx context.Context, question string, results [
 	for i, r := range results {
 		fmt.Fprintf(&sb, "### Fact %d\n", i+1)
 		fmt.Fprintf(&sb, "Entity: %s (%s)\n", r.Entity.QualifiedName, r.Entity.Kind)
+		if r.RepoName != "" {
+			fmt.Fprintf(&sb, "Repo: %s\n", r.RepoName)
+		}
 		if r.Entity.Path != nil && *r.Entity.Path != "" {
 			fmt.Fprintf(&sb, "File: %s\n", *r.Entity.Path)
 		}

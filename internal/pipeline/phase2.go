@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,15 +20,16 @@ import (
 )
 
 type Phase2Config struct {
-	RepoID      uuid.UUID
-	RepoName    string
-	RepoPath    string
-	Manifest    *Manifest
-	Model       string
-	Concurrency int
-	Pool        *pgxpool.Pool
-	LLM         llm.Client
-	Roster      []EntityEntry // Ctags-derived entity roster for grounding names
+	RepoID       uuid.UUID
+	RepoName     string
+	RepoPath     string
+	Manifest     *Manifest
+	Model        string
+	Concurrency  int
+	Pool         *pgxpool.Pool
+	LLM          llm.Client
+	Roster       []EntityEntry // Ctags-derived entity roster for grounding names
+	ProgressFunc func(msg string)
 }
 
 type Phase2Stats struct {
@@ -99,7 +102,37 @@ func RunPhase2(ctx context.Context, cfg Phase2Config) (*Phase2Stats, error) {
 	// Count total pending jobs for progress
 	counts, _ := jobStore.CountByStatus(ctx, cfg.RepoID, models.PhasePhase2)
 	totalJobs := counts["pending"]
-	processed := 0
+	var completed atomic.Int64
+	phase2Start := time.Now()
+
+	progress := func(file string, done bool, failed bool) {
+		c := completed.Load()
+		if done {
+			c = completed.Add(1)
+		}
+		if cfg.ProgressFunc == nil {
+			return
+		}
+		if failed {
+			cfg.ProgressFunc(fmt.Sprintf("Phase 2: [%d/%d] FAILED %s", c, totalJobs, file))
+			return
+		}
+		if !done {
+			cfg.ProgressFunc(fmt.Sprintf("Phase 2: [%d/%d] Analyzing %s...", c+1, totalJobs, file))
+			return
+		}
+		// Calculate ETA
+		eta := ""
+		if c > 0 {
+			elapsed := time.Since(phase2Start)
+			perFile := elapsed / time.Duration(c)
+			remaining := perFile * time.Duration(int64(totalJobs)-c)
+			if remaining > time.Second {
+				eta = fmt.Sprintf(" — ETA %s", remaining.Round(time.Second))
+			}
+		}
+		cfg.ProgressFunc(fmt.Sprintf("Phase 2: [%d/%d] Done %s%s", c, totalJobs, file, eta))
+	}
 
 	// Process jobs with bounded concurrency
 	g, gctx := errgroup.WithContext(ctx)
@@ -115,12 +148,14 @@ func RunPhase2(ctx context.Context, cfg Phase2Config) (*Phase2Stats, error) {
 		}
 
 		g.Go(func() error {
-			fmt.Printf("  [%d/%d] Analyzing %s...\n", processed+1, totalJobs, job.Target)
+			c := completed.Load()
+			fmt.Printf("  [%d/%d] Analyzing %s...\n", c+1, totalJobs, job.Target)
+			progress(job.Target, false, false)
 			fileDeferred, err := processFile(gctx, cfg, job, entityStore, factStore, relStore, stats)
-			processed++
 			if err != nil {
 				jobStore.Fail(gctx, job.ID, err.Error())
-				fmt.Printf("  [%d/%d] FAILED %s: %v\n", processed, totalJobs, job.Target, err)
+				progress(job.Target, true, true)
+				fmt.Printf("  [FAILED] %s: %v\n", job.Target, err)
 				return nil // don't cancel other workers
 			}
 			if len(fileDeferred) > 0 {
@@ -128,7 +163,9 @@ func RunPhase2(ctx context.Context, cfg Phase2Config) (*Phase2Stats, error) {
 				deferred = append(deferred, fileDeferred...)
 				deferredMu.Unlock()
 			}
-			fmt.Printf("  [%d/%d] Done %s\n", processed, totalJobs, job.Target)
+			progress(job.Target, true, false)
+			c = completed.Load()
+			fmt.Printf("  [%d/%d] Done %s\n", c, totalJobs, job.Target)
 			return nil
 		})
 	}

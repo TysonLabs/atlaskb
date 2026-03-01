@@ -31,10 +31,16 @@ type ManifestStats struct {
 	ByLanguage      map[string]int    `json:"by_language"`
 }
 
-func RunPhase1(repoPath string) (*Manifest, error) {
+func RunPhase1(repoPath string, excludeDirs ...[]string) (*Manifest, error) {
 	absPath, err := filepath.Abs(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving path: %w", err)
+	}
+
+	// Flatten the optional excludeDirs parameter
+	var excluded []string
+	if len(excludeDirs) > 0 && excludeDirs[0] != nil {
+		excluded = excludeDirs[0]
 	}
 
 	manifest := &Manifest{
@@ -61,11 +67,27 @@ func RunPhase1(repoPath string) (*Manifest, error) {
 			if vendorDirs[strings.ToLower(base)] {
 				return filepath.SkipDir
 			}
+			// Skip user-configured exclude dirs
+			if len(excluded) > 0 {
+				relDir, relErr := filepath.Rel(absPath, path)
+				if relErr == nil {
+					for _, ex := range excluded {
+						if relDir == ex || strings.HasPrefix(relDir, ex+"/") {
+							return filepath.SkipDir
+						}
+					}
+				}
+			}
 			return nil
 		}
 
 		relPath, err := filepath.Rel(absPath, path)
 		if err != nil {
+			return nil
+		}
+
+		// Skip test files by naming convention
+		if isTestFile(relPath) {
 			return nil
 		}
 

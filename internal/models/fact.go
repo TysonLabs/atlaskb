@@ -117,9 +117,16 @@ func (s *FactStore) ListByRepoWithoutEmbedding(ctx context.Context, repoID uuid.
 	return facts, nil
 }
 
-func (s *FactStore) SearchByVector(ctx context.Context, embedding pgvector.Vector, repoIDs []uuid.UUID, limit int) ([]Fact, error) {
-	query := `SELECT id, entity_id, repo_id, claim, dimension, category, confidence, provenance, superseded_by, created_at, updated_at
-		 FROM facts WHERE embedding IS NOT NULL AND superseded_by IS NULL`
+// ScoredFact wraps a Fact with its cosine similarity score from vector search.
+type ScoredFact struct {
+	Fact
+	Score float64
+}
+
+func (s *FactStore) SearchByVector(ctx context.Context, embedding pgvector.Vector, repoIDs []uuid.UUID, limit int) ([]ScoredFact, error) {
+	query := `SELECT id, entity_id, repo_id, claim, dimension, category, confidence, provenance, superseded_by, created_at, updated_at,
+		 1 - (embedding <=> $1) AS score
+		 FROM facts WHERE embedding IS NOT NULL AND superseded_by IS NULL AND 1 - (embedding <=> $1) >= 0.3`
 	args := []any{embedding}
 	argIdx := 2
 
@@ -135,6 +142,43 @@ func (s *FactStore) SearchByVector(ctx context.Context, embedding pgvector.Vecto
 	rows, err := s.Pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
+	}
+	defer rows.Close()
+
+	var facts []ScoredFact
+	for rows.Next() {
+		var f ScoredFact
+		var provJSON []byte
+		if err := rows.Scan(&f.ID, &f.EntityID, &f.RepoID, &f.Claim, &f.Dimension, &f.Category, &f.Confidence, &provJSON, &f.SupersededBy, &f.CreatedAt, &f.UpdatedAt, &f.Score); err != nil {
+			return nil, fmt.Errorf("scanning fact: %w", err)
+		}
+		if err := json.Unmarshal(provJSON, &f.Provenance); err != nil {
+			return nil, fmt.Errorf("unmarshaling provenance: %w", err)
+		}
+		facts = append(facts, f)
+	}
+	return facts, nil
+}
+
+// SearchByKeyword performs full-text search on fact claims using PostgreSQL ts_query.
+func (s *FactStore) SearchByKeyword(ctx context.Context, query string, repoIDs []uuid.UUID, limit int) ([]Fact, error) {
+	sql := `SELECT id, entity_id, repo_id, claim, dimension, category, confidence, provenance, superseded_by, created_at, updated_at
+		 FROM facts WHERE claim_tsv @@ websearch_to_tsquery('english', $1) AND superseded_by IS NULL`
+	args := []any{query}
+	argIdx := 2
+
+	if len(repoIDs) > 0 {
+		sql += fmt.Sprintf(" AND repo_id = ANY($%d)", argIdx)
+		args = append(args, repoIDs)
+		argIdx++
+	}
+
+	sql += fmt.Sprintf(" ORDER BY ts_rank(claim_tsv, websearch_to_tsquery('english', $1)) DESC LIMIT $%d", argIdx)
+	args = append(args, limit)
+
+	rows, err := s.Pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("keyword search: %w", err)
 	}
 	defer rows.Close()
 

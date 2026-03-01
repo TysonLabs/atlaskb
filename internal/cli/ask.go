@@ -14,6 +14,7 @@ import (
 )
 
 var askRepo string
+var askTopK int
 
 var askCmd = &cobra.Command{
 	Use:   "ask [question]",
@@ -25,6 +26,7 @@ var askCmd = &cobra.Command{
 
 func init() {
 	askCmd.Flags().StringVar(&askRepo, "repo", "", "filter by repository name")
+	askCmd.Flags().IntVar(&askTopK, "top-k", 40, "number of facts to retrieve for answer synthesis")
 	rootCmd.AddCommand(askCmd)
 }
 
@@ -50,10 +52,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	embedClient := embeddings.NewOpenAIClient(cfg.Embeddings.BaseURL, cfg.Embeddings.APIKey)
+	llmClient := llm.NewOpenAIClient(cfg.LLM.BaseURL, cfg.LLM.APIKey)
 	engine := query.NewEngine(pool, embedClient)
+	engine.SetLLM(llmClient, cfg.Pipeline.ExtractionModel)
 
 	logVerbose("Searching knowledge graph...")
-	results, err := engine.Search(cmd.Context(), question, repoIDs, 20)
+	results, err := engine.Search(cmd.Context(), question, repoIDs, askTopK)
 	if err != nil {
 		return fmt.Errorf("search failed: %w", err)
 	}
@@ -65,7 +69,6 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	logVerbose("Found %d relevant facts, synthesizing answer...", len(results))
 
-	llmClient := llm.NewOpenAIClient(cfg.LLM.BaseURL, cfg.LLM.APIKey)
 	synth := query.NewSynthesizer(llmClient, cfg.Pipeline.ExtractionModel)
 
 	stream, err := synth.Synthesize(cmd.Context(), question, results)

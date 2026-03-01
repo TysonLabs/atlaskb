@@ -174,6 +174,60 @@ var SchemaPhase5 = &llm.JSONSchema{
 }`),
 }
 
+var SchemaPhase3 = &llm.JSONSchema{
+	Name: "phase3_pr_analysis",
+	Schema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "entity_name": { "type": "string" },
+          "claim": { "type": "string" },
+          "dimension": { "type": "string", "enum": ["what","how","why","when"] },
+          "category": { "type": "string", "enum": ["behavior","constraint","pattern","convention","debt","risk"] },
+          "confidence": { "type": "string", "enum": ["high","medium","low"] }
+        },
+        "required": ["entity_name","claim","dimension","category","confidence"],
+        "additionalProperties": false
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "summary": { "type": "string" },
+          "description": { "type": "string" },
+          "rationale": { "type": "string" },
+          "alternatives": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "description": { "type": "string" },
+                "rejected_because": { "type": "string" }
+              },
+              "required": ["description","rejected_because"],
+              "additionalProperties": false
+            }
+          },
+          "tradeoffs": { "type": "array", "items": { "type": "string" } },
+          "pr_number": { "type": "integer" },
+          "made_at": { "type": "string" }
+        },
+        "required": ["summary","description","rationale","alternatives","tradeoffs","pr_number","made_at"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["facts","decisions"],
+  "additionalProperties": false
+}`),
+}
+
 var SchemaGitLog = &llm.JSONSchema{
 	Name: "gitlog_analysis",
 	Schema: json.RawMessage(`{

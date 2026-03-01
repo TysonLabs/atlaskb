@@ -323,7 +323,7 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		break
 	}
 
-	// Build final config
+	// Build final config (preserve existing GitHub + Server settings)
 	finalCfg := config.Config{
 		Database:   dbCfg,
 		LLM:        config.LLMConfig{BaseURL: llmURL, APIKey: llmKey},
@@ -333,6 +333,8 @@ func runSetup(cmd *cobra.Command, args []string) error {
 			ExtractionModel: existing.Pipeline.ExtractionModel,
 			SynthesisModel:  existing.Pipeline.SynthesisModel,
 		},
+		GitHub: existing.GitHub,
+		Server: existing.Server,
 	}
 
 	if finalCfg.Pipeline.ExtractionModel == "" {

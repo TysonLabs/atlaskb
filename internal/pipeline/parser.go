@@ -629,6 +629,32 @@ func ParsePhase5(raw string) (*Phase5Result, error) {
 	return &result, nil
 }
 
+type Phase3Result struct {
+	Facts     []ExtractedFact `json:"facts"`
+	Decisions []struct {
+		Summary      string `json:"summary"`
+		Description  string `json:"description"`
+		Rationale    string `json:"rationale"`
+		Alternatives []struct {
+			Description     string `json:"description"`
+			RejectedBecause string `json:"rejected_because"`
+		} `json:"alternatives"`
+		Tradeoffs []string `json:"tradeoffs"`
+		PRNumber  int      `json:"pr_number"`
+		MadeAt    string   `json:"made_at"`
+	} `json:"decisions"`
+}
+
+func ParsePhase3(raw string) (*Phase3Result, error) {
+	cleaned := CleanJSON(raw)
+	var result Phase3Result
+	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
+		return nil, err
+	}
+	result.Facts = sanitizeFacts(result.Facts)
+	return &result, nil
+}
+
 func ParseGitLog(raw string) (*GitLogResult, error) {
 	cleaned := CleanJSON(raw)
 	var result GitLogResult

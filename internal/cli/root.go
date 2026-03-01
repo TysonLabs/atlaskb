@@ -25,8 +25,16 @@ var rootCmd = &cobra.Command{
 	Short: "AtlasKB — a knowledge base built from your codebase",
 	Long:  "AtlasKB indexes repositories via multi-phase LLM extraction and stores knowledge in a Postgres+pgvector graph for natural language querying.",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Skip DB connection for setup command
-		if cmd.Name() == "setup" {
+		// Skip DB connection for setup and config commands
+		if cmd.Name() == "setup" || cmd.Parent() != nil && cmd.Parent().Name() == "config" {
+			// Still load config for config subcommands
+			if cmd.Parent() != nil && cmd.Parent().Name() == "config" {
+				var err error
+				cfg, err = config.Load(cfgPath)
+				if err != nil {
+					return fmt.Errorf("loading config: %w", err)
+				}
+			}
 			return nil
 		}
 

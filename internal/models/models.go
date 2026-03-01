@@ -82,6 +82,7 @@ const (
 	PhasePhase2    = "phase2"
 	PhasePhase4    = "phase4"
 	PhasePhase5    = "phase5"
+	PhasePhase3    = "phase3"
 	PhaseGitLog    = "gitlog"
 	PhaseEmbedding = "embedding"
 )
@@ -92,6 +93,7 @@ type Repo struct {
 	RemoteURL     *string    `json:"remote_url,omitempty"`
 	LocalPath     string     `json:"local_path"`
 	DefaultBranch string     `json:"default_branch"`
+	ExcludeDirs   []string   `json:"exclude_dirs"`
 	LastCommitSHA *string    `json:"last_commit_sha,omitempty"`
 	LastIndexedAt *time.Time `json:"last_indexed_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`

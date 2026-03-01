@@ -61,7 +61,13 @@ Respond with JSON:
 }
 
 RULES:
-- Generate at least 2 facts per entity (one "what", one "how").
+- Generate 4-10 facts per entity:
+  - At least 1 "what" (behavior/purpose)
+  - At least 2 "how" (implementation details, patterns, numeric constants)
+  - At least 1 "when" if any timing/scheduling is visible (intervals, timeouts, TTLs)
+- Extract specific numeric values: timeouts, pool sizes, retry counts, buffer sizes, intervals.
+- Extract lifecycle patterns: init → run → cleanup sequences, state transitions.
+- Extract facts from comments — comments often explain "why" and operational constraints.
 - Generate at least 1 relationship per entity (e.g. "owns" from parent type to method).
 - Use ONLY the exact qualified_names listed above for entity_name.
 - For relationship targets, you may reference any entity in the codebase.`, filePath, language, content, nameList)

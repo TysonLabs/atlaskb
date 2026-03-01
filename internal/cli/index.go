@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tgeorge06/atlaskb/internal/embeddings"
+	ghpkg "github.com/tgeorge06/atlaskb/internal/github"
 	"github.com/tgeorge06/atlaskb/internal/llm"
 	"github.com/tgeorge06/atlaskb/internal/pipeline"
 )
@@ -30,7 +31,7 @@ func init() {
 	indexCmd.Flags().BoolVar(&indexForce, "force", false, "re-analyze all files even if unchanged")
 	indexCmd.Flags().BoolVarP(&indexYes, "yes", "y", false, "skip confirmation prompts")
 	indexCmd.Flags().IntVar(&indexConcurrency, "concurrency", 0, "number of parallel LLM calls (default from config)")
-	indexCmd.Flags().StringSliceVar(&indexPhases, "phase", nil, "run only specific phases (phase1, phase2, backfill, gitlog, phase4, phase5, embedding)")
+	indexCmd.Flags().StringSliceVar(&indexPhases, "phase", nil, "run only specific phases (phase1, phase2, backfill, gitlog, phase3, phase4, phase5, embedding)")
 	rootCmd.AddCommand(indexCmd)
 }
 
@@ -45,18 +46,27 @@ func runIndex(cmd *cobra.Command, args []string) error {
 	llmClient := llm.NewOpenAIClient(cfg.LLM.BaseURL, cfg.LLM.APIKey)
 	embedClient := embeddings.NewOpenAIClient(cfg.Embeddings.BaseURL, cfg.Embeddings.APIKey)
 
+	var ghClient *ghpkg.Client
+	if cfg.GitHub.Token != "" {
+		ghClient = ghpkg.NewClient(cfg.GitHub)
+	}
+
 	result, err := pipeline.Orchestrate(cmd.Context(), pipeline.OrchestratorConfig{
-		RepoPath:        repoPath,
-		Force:           indexForce,
-		DryRun:          indexDryRun,
-		Concurrency:     concurrency,
-		ExtractionModel: cfg.Pipeline.ExtractionModel,
-		SynthesisModel:  cfg.Pipeline.SynthesisModel,
-		Pool:            pool,
-		LLM:             llmClient,
-		Embedder:        embedClient,
-		Verbose:         verbose,
-		Phases:          indexPhases,
+		RepoPath:          repoPath,
+		Force:             indexForce,
+		DryRun:            indexDryRun,
+		Concurrency:       concurrency,
+		ExtractionModel:   cfg.Pipeline.ExtractionModel,
+		SynthesisModel:    cfg.Pipeline.SynthesisModel,
+		Pool:              pool,
+		LLM:               llmClient,
+		Embedder:          embedClient,
+		Verbose:           verbose,
+		Phases:            indexPhases,
+		GlobalExcludeDirs: cfg.Pipeline.GlobalExcludeDirs,
+		GitHubClient:      ghClient,
+		GitHubMaxPRs:      cfg.GitHub.MaxPRs,
+		GitHubPRBatchSize: cfg.GitHub.PRBatchSize,
 	})
 	if err != nil {
 		return fmt.Errorf("indexing failed: %w", err)
