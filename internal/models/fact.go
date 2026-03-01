@@ -186,9 +186,42 @@ func (s *FactStore) SearchByVector(ctx context.Context, embedding pgvector.Vecto
 	return facts, nil
 }
 
+// SearchByVectorForEntity performs vector search scoped to a single entity.
+// Returns up to `limit` ScoredFact results ordered by similarity. No minimum
+// similarity threshold — the expansion discount handles low-relevance results.
+func (s *FactStore) SearchByVectorForEntity(ctx context.Context, embedding pgvector.Vector, entityID uuid.UUID, limit int) ([]ScoredFact, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT id, entity_id, repo_id, claim, dimension, category, confidence, provenance, superseded_by, created_at, updated_at,
+		 1 - (embedding <=> $1) AS score
+		 FROM facts WHERE embedding IS NOT NULL AND superseded_by IS NULL AND entity_id = $2
+		 ORDER BY embedding <=> $1 LIMIT $3`,
+		embedding, entityID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("vector search for entity: %w", err)
+	}
+	defer rows.Close()
+
+	var facts []ScoredFact
+	for rows.Next() {
+		var f ScoredFact
+		var provJSON []byte
+		if err := rows.Scan(&f.ID, &f.EntityID, &f.RepoID, &f.Claim, &f.Dimension, &f.Category, &f.Confidence, &provJSON, &f.SupersededBy, &f.CreatedAt, &f.UpdatedAt, &f.Score); err != nil {
+			return nil, fmt.Errorf("scanning fact: %w", err)
+		}
+		if err := json.Unmarshal(provJSON, &f.Provenance); err != nil {
+			return nil, fmt.Errorf("unmarshaling provenance: %w", err)
+		}
+		facts = append(facts, f)
+	}
+	return facts, nil
+}
+
 // SearchByKeyword performs full-text search on fact claims using PostgreSQL ts_query.
-func (s *FactStore) SearchByKeyword(ctx context.Context, query string, repoIDs []uuid.UUID, limit int) ([]Fact, error) {
-	sql := `SELECT id, entity_id, repo_id, claim, dimension, category, confidence, provenance, superseded_by, created_at, updated_at
+// Returns ScoredFact with ts_rank scores for proper ranking.
+func (s *FactStore) SearchByKeyword(ctx context.Context, query string, repoIDs []uuid.UUID, limit int) ([]ScoredFact, error) {
+	sql := `SELECT id, entity_id, repo_id, claim, dimension, category, confidence, provenance, superseded_by, created_at, updated_at,
+		 ts_rank(claim_tsv, websearch_to_tsquery('english', $1)) AS score
 		 FROM facts WHERE claim_tsv @@ websearch_to_tsquery('english', $1) AND superseded_by IS NULL`
 	args := []any{query}
 	argIdx := 2
@@ -199,7 +232,7 @@ func (s *FactStore) SearchByKeyword(ctx context.Context, query string, repoIDs [
 		argIdx++
 	}
 
-	sql += fmt.Sprintf(" ORDER BY ts_rank(claim_tsv, websearch_to_tsquery('english', $1)) DESC LIMIT $%d", argIdx)
+	sql += fmt.Sprintf(" ORDER BY score DESC LIMIT $%d", argIdx)
 	args = append(args, limit)
 
 	rows, err := s.Pool.Query(ctx, sql, args...)
@@ -208,11 +241,11 @@ func (s *FactStore) SearchByKeyword(ctx context.Context, query string, repoIDs [
 	}
 	defer rows.Close()
 
-	var facts []Fact
+	var facts []ScoredFact
 	for rows.Next() {
-		var f Fact
+		var f ScoredFact
 		var provJSON []byte
-		if err := rows.Scan(&f.ID, &f.EntityID, &f.RepoID, &f.Claim, &f.Dimension, &f.Category, &f.Confidence, &provJSON, &f.SupersededBy, &f.CreatedAt, &f.UpdatedAt); err != nil {
+		if err := rows.Scan(&f.ID, &f.EntityID, &f.RepoID, &f.Claim, &f.Dimension, &f.Category, &f.Confidence, &provJSON, &f.SupersededBy, &f.CreatedAt, &f.UpdatedAt, &f.Score); err != nil {
 			return nil, fmt.Errorf("scanning fact: %w", err)
 		}
 		if err := json.Unmarshal(provJSON, &f.Provenance); err != nil {
