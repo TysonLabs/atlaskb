@@ -74,12 +74,35 @@ ENTITY RULES:
 - In a main.go or entry-point file, the only entity should be "main" itself. Express
   the wiring and configuration as facts on the main entity, not as separate entities.
 - Use exact names from the source code. Never paraphrase or rename functions.
-- qualified_name must match the code exactly: "package::Type.Method" for methods,
-  "package::FunctionName" for top-level functions.
 - Express implementation details as facts on the parent entity.
-- Use consistent qualified_name: "package::Name" for Go, "module.Class" for Python.
+
+## qualified_name FORMAT (CRITICAL — follow EXACTLY):
+Separator rules: "::" between package/module and name, "." between type and method.
+NEVER include the repo name, file path, or "src" as a prefix.
+
+**Go:**
+  - Package-level type/func: "package::Name"       → e.g. "storage::MemoryStorage", "bus::NewBus"
+  - Method on type:          "package::Type.Method" → e.g. "storage::MemoryStorage.Save"
+  - DO NOT: "atlaskb-test-repo::storage::MemoryStorage", "src::storage::MemoryStorage"
+  - DO NOT: "storage/MemoryStorage", "storage.MemoryStorage" (for types — use :: not . or /)
+
+**Python:**
+  - Module-level class/func: "module::Name"          → e.g. "validators::EmailValidator", "auth::authenticate"
+  - Method on class:         "module::Class.Method"   → e.g. "validators::EmailValidator.validate"
+  - Nested modules use ".":  "utils.helpers::format_date"
+  - DO NOT: "src::validators::EmailValidator", "validators.EmailValidator" (for top-level — use ::)
+
+**TypeScript/JavaScript:**
+  - Module-level class/func: "module::Name"           → e.g. "channels::HttpChannel", "routes::createRouter"
+  - Method on class:         "module::Class.Method"    → e.g. "channels::HttpChannel.send"
+  - Use the directory/module name, NOT the file path: "channels" not "src/channels" or "src::channels"
+  - DO NOT: "atlaskb-typescript-test-repo::src::channels::HttpChannel"
 - If this file references an entity defined in another file, emit facts/relationships
   using its qualified_name — do NOT re-declare the entity.
+- BARREL/RE-EXPORT FILES: If a file only re-exports symbols (TypeScript index.ts with
+  only "export { ... } from" statements, Python __init__.py with only imports and __all__),
+  return EMPTY arrays for entities, facts, and relationships. Only extract from the
+  defining file, not re-export files.
 
 FACT RULES:
 - Extract at least TWO facts per entity: one "what" (behavior/capability) and one

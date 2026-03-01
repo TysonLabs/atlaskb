@@ -71,6 +71,27 @@ func (s *EntityStore) FindByNameAndKind(ctx context.Context, repoID uuid.UUID, n
 	return entities, nil
 }
 
+func (s *EntityStore) FindByName(ctx context.Context, repoID uuid.UUID, name string) ([]Entity, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		 FROM entities WHERE repo_id = $1 AND name = $2`, repoID, name,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("finding entities by name: %w", err)
+	}
+	defer rows.Close()
+
+	var entities []Entity
+	for rows.Next() {
+		var e Entity
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning entity: %w", err)
+		}
+		entities = append(entities, e)
+	}
+	return entities, nil
+}
+
 func (s *EntityStore) Update(ctx context.Context, e *Entity) error {
 	e.UpdatedAt = time.Now()
 	_, err := s.Pool.Exec(ctx,
@@ -155,6 +176,57 @@ func (s *EntityStore) FindByQualifiedName(ctx context.Context, repoID uuid.UUID,
 	return e, nil
 }
 
+// ListOrphans returns entities that have no facts (orphaned entities).
+func (s *EntityStore) ListOrphans(ctx context.Context, repoID uuid.UUID) ([]Entity, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT e.id, e.repo_id, e.kind, e.name, e.qualified_name, e.path, e.summary, e.capabilities, e.assumptions, e.created_at, e.updated_at
+		 FROM entities e
+		 LEFT JOIN facts f ON f.entity_id = e.id AND f.superseded_by IS NULL
+		 WHERE e.repo_id = $1 AND e.path IS NOT NULL AND f.id IS NULL
+		 ORDER BY e.path, e.qualified_name`, repoID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing orphan entities: %w", err)
+	}
+	defer rows.Close()
+
+	var entities []Entity
+	for rows.Next() {
+		var e Entity
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning orphan entity: %w", err)
+		}
+		entities = append(entities, e)
+	}
+	return entities, nil
+}
+
+// ListWithoutRelationships returns entities that have no relationships (isolated entities).
+func (s *EntityStore) ListWithoutRelationships(ctx context.Context, repoID uuid.UUID) ([]Entity, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT e.id, e.repo_id, e.kind, e.name, e.qualified_name, e.path, e.summary, e.capabilities, e.assumptions, e.created_at, e.updated_at
+		 FROM entities e
+		 LEFT JOIN relationships r1 ON r1.from_entity_id = e.id
+		 LEFT JOIN relationships r2 ON r2.to_entity_id = e.id
+		 WHERE e.repo_id = $1 AND e.path IS NOT NULL AND r1.id IS NULL AND r2.id IS NULL
+		 ORDER BY e.path, e.qualified_name`, repoID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing entities without relationships: %w", err)
+	}
+	defer rows.Close()
+
+	var entities []Entity
+	for rows.Next() {
+		var e Entity
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning entity: %w", err)
+		}
+		entities = append(entities, e)
+	}
+	return entities, nil
+}
+
 func (s *EntityStore) CountByRepo(ctx context.Context, repoID uuid.UUID) (total int, byKind map[string]int, err error) {
 	byKind = make(map[string]int)
 	rows, err := s.Pool.Query(ctx,
@@ -218,6 +290,49 @@ func (s *EntityStore) DeleteByRepo(ctx context.Context, repoID uuid.UUID) error 
 	_, err := s.Pool.Exec(ctx, `DELETE FROM entities WHERE repo_id = $1`, repoID)
 	if err != nil {
 		return fmt.Errorf("deleting entities: %w", err)
+	}
+	return nil
+}
+
+// ListDistinctPaths returns all distinct file paths for entities in a repo.
+func (s *EntityStore) ListDistinctPaths(ctx context.Context, repoID uuid.UUID) ([]string, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT DISTINCT path FROM entities WHERE repo_id = $1 AND path IS NOT NULL`, repoID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing distinct paths: %w", err)
+	}
+	defer rows.Close()
+
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("scanning path: %w", err)
+		}
+		paths = append(paths, p)
+	}
+	return paths, nil
+}
+
+// DeleteByPath deletes all entities (and cascading facts/relationships) for a given path in a repo.
+func (s *EntityStore) DeleteByPath(ctx context.Context, repoID uuid.UUID, path string) error {
+	// Delete facts and relationships first (entities FK-referenced by facts.entity_id and relationships.from/to)
+	_, err := s.Pool.Exec(ctx,
+		`DELETE FROM facts WHERE entity_id IN (SELECT id FROM entities WHERE repo_id = $1 AND path = $2)`, repoID, path)
+	if err != nil {
+		return fmt.Errorf("deleting facts for path %s: %w", path, err)
+	}
+	_, err = s.Pool.Exec(ctx,
+		`DELETE FROM relationships WHERE from_entity_id IN (SELECT id FROM entities WHERE repo_id = $1 AND path = $2)
+		 OR to_entity_id IN (SELECT id FROM entities WHERE repo_id = $1 AND path = $2)`, repoID, path)
+	if err != nil {
+		return fmt.Errorf("deleting relationships for path %s: %w", path, err)
+	}
+	_, err = s.Pool.Exec(ctx,
+		`DELETE FROM entities WHERE repo_id = $1 AND path = $2`, repoID, path)
+	if err != nil {
+		return fmt.Errorf("deleting entities for path %s: %w", path, err)
 	}
 	return nil
 }

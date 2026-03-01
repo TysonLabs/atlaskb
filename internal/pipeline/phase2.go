@@ -128,35 +128,23 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 
 	prompt := Phase2Prompt(job.Target, fi.Language, cfg.RepoName, cfg.Manifest.Stack, string(content))
 
-	var resp *llm.Response
-	var result *Phase2Result
-	const maxRetries = 3
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		var llmErr error
-		resp, llmErr = cfg.LLM.Complete(ctx, cfg.Model, systemPromptPhase2, []llm.Message{
-			{Role: "user", Content: prompt},
-		}, 4096, SchemaPhase2)
-		if llmErr != nil {
-			if attempt == maxRetries {
-				return fmt.Errorf("LLM call (attempt %d/%d): %w", attempt, maxRetries, llmErr)
-			}
-			continue
-		}
-
-		result, llmErr = ParsePhase2(resp.Content)
-		if llmErr != nil {
-			if attempt == maxRetries {
-				cleaned := CleanJSON(resp.Content)
-				preview := cleaned
-				if len(preview) > 200 {
-					preview = preview[:200]
-				}
-				return fmt.Errorf("parsing response (attempt %d/%d): %w\n  raw preview: %s", attempt, maxRetries, llmErr, preview)
-			}
-			continue
-		}
-		break
+	resp, attempts, err := callLLMWithRetry(ctx, cfg.LLM, cfg.Model, systemPromptPhase2, []llm.Message{
+		{Role: "user", Content: prompt},
+	}, 4096, SchemaPhase2, DefaultRetryConfig)
+	if err != nil {
+		return fmt.Errorf("LLM call: %w", err)
 	}
+
+	result, err := ParsePhase2(resp.Content)
+	if err != nil {
+		cleaned := CleanJSON(resp.Content)
+		preview := cleaned
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		return fmt.Errorf("parsing response: %w\n  raw preview: %s", err, preview)
+	}
+	_ = attempts
 
 	log.Printf("[phase2] %s: extracted %d entities, %d facts, %d relationships",
 		job.Target, len(result.Entities), len(result.Facts), len(result.Relationships))
@@ -242,49 +230,10 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 
 	// Store facts
 	for _, ext := range result.Facts {
-		entityID, ok := entityMap[ext.EntityName]
+		entityID, ok := resolveEntityWithMap(ctx, entityStore, cfg.RepoID, ext.EntityName, entityMap)
 		if !ok {
-			// Try to find existing entity
-			existing, _ := entityStore.FindByQualifiedName(ctx, cfg.RepoID, ext.EntityName)
-			if existing != nil {
-				entityID = existing.ID
-			} else {
-				// Fallback 1: try the owner entity (e.g. "bus::Bus" for "bus::Bus.dispatch")
-				owner := qualifiedNameOwner(ext.EntityName)
-				found := false
-				if owner != ext.EntityName {
-					if ownerID, ok2 := entityMap[owner]; ok2 {
-						entityID = ownerID
-						found = true
-						logVerboseF("[phase2] %s: fact for %s → reparented to owner %s", job.Target, ext.EntityName, owner)
-					} else if ownerEntity, _ := entityStore.FindByQualifiedName(ctx, cfg.RepoID, owner); ownerEntity != nil {
-						entityID = ownerEntity.ID
-						found = true
-						logVerboseF("[phase2] %s: fact for %s → reparented to owner %s", job.Target, ext.EntityName, owner)
-					}
-				}
-				// Fallback 2: search entityMap for a name ending match (e.g. "api::Publish" matches "api::Handler.Publish")
-				if !found {
-					// Extract the short name (after :: and any .)
-					shortName := ext.EntityName
-					if idx := strings.LastIndex(shortName, "::"); idx >= 0 {
-						shortName = shortName[idx+2:]
-					}
-					pkg := qualifiedNamePackage(ext.EntityName)
-					for qn, eid := range entityMap {
-						if qualifiedNamePackage(qn) == pkg && strings.HasSuffix(qn, "."+shortName) {
-							entityID = eid
-							found = true
-							logVerboseF("[phase2] %s: fact for %s → reparented to %s (name match)", job.Target, ext.EntityName, qn)
-							break
-						}
-					}
-				}
-				if !found {
-					logVerboseF("[phase2] %s: fact skipped (entity not found): %s", job.Target, ext.EntityName)
-					continue
-				}
-			}
+			logVerboseF("[phase2] %s: fact skipped (entity not found): %s", job.Target, ext.EntityName)
+			continue
 		}
 
 		fact := &models.Fact{
@@ -311,49 +260,16 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 	// Store relationships using Upsert
 	relsCreated := 0
 	for _, ext := range result.Relationships {
-		fromID, ok := entityMap[ext.From]
-		if !ok {
-			existing, _ := entityStore.FindByQualifiedName(ctx, cfg.RepoID, ext.From)
-			if existing != nil {
-				fromID = existing.ID
-			} else {
-				// Fallback to owner
-				owner := qualifiedNameOwner(ext.From)
-				if owner != ext.From {
-					if ownerID, ok2 := entityMap[owner]; ok2 {
-						fromID = ownerID
-					} else if ownerEntity, _ := entityStore.FindByQualifiedName(ctx, cfg.RepoID, owner); ownerEntity != nil {
-						fromID = ownerEntity.ID
-					} else {
-						continue
-					}
-				} else {
-					continue
-				}
-			}
+		fromID, fromOK := resolveEntityWithMap(ctx, entityStore, cfg.RepoID, ext.From, entityMap)
+		if !fromOK {
+			logVerboseF("[phase2] %s: relationship skipped (from entity not found): %s", job.Target, ext.From)
+			continue
 		}
-		toID, ok := entityMap[ext.To]
-		if !ok {
-			existing, _ := entityStore.FindByQualifiedName(ctx, cfg.RepoID, ext.To)
-			if existing != nil {
-				toID = existing.ID
-			} else {
-				// Fallback to owner
-				owner := qualifiedNameOwner(ext.To)
-				if owner != ext.To {
-					if ownerID, ok2 := entityMap[owner]; ok2 {
-						toID = ownerID
-					} else if ownerEntity, _ := entityStore.FindByQualifiedName(ctx, cfg.RepoID, owner); ownerEntity != nil {
-						toID = ownerEntity.ID
-					} else {
-						continue
-					}
-				} else {
-					continue
-				}
-			}
+		toID, toOK := resolveEntityWithMap(ctx, entityStore, cfg.RepoID, ext.To, entityMap)
+		if !toOK {
+			logVerboseF("[phase2] %s: relationship skipped (to entity not found): %s", job.Target, ext.To)
+			continue
 		}
-
 		rel := &models.Relationship{
 			RepoID:       cfg.RepoID,
 			FromEntityID: fromID,
@@ -379,7 +295,7 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 	stats.TotalTokens += resp.InputTokens + resp.OutputTokens
 	stats.FilesProcessed++
 	costUSD := float64(resp.InputTokens)/1_000_000*SonnetInputPer1M + float64(resp.OutputTokens)/1_000_000*SonnetOutputPer1M
-	return jobStore.Complete(ctx, job.ID, resp.InputTokens+resp.OutputTokens, costUSD)
+	return jobStore.CompleteWithDetails(ctx, job.ID, resp.InputTokens+resp.OutputTokens, costUSD, resp.Model, attempts)
 }
 
 func logVerboseF(format string, args ...any) {

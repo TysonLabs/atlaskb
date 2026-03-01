@@ -28,6 +28,7 @@ type OrchestratorConfig struct {
 	LLM             llm.Client
 	Embedder        embeddings.Client
 	Verbose         bool
+	Phases          []string // If non-empty, only run these phases (e.g. ["phase4"])
 }
 
 type OrchestratorResult struct {
@@ -39,6 +40,20 @@ type OrchestratorResult struct {
 	TotalTokens     int
 	TotalCostUSD    float64
 	Duration        time.Duration
+}
+
+// shouldRunPhase checks if a phase should be run given the Phases filter.
+// If Phases is empty, all phases run.
+func shouldRunPhase(phases []string, phase string) bool {
+	if len(phases) == 0 {
+		return true
+	}
+	for _, p := range phases {
+		if p == phase {
+			return true
+		}
+	}
+	return false
 }
 
 func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResult, error) {
@@ -85,6 +100,29 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	}
 	result.RepoID = repo.ID
 
+	// Determine run mode
+	runMode := "incremental"
+	if cfg.Force {
+		runMode = "full"
+	}
+	if len(cfg.Phases) > 0 {
+		runMode = "partial"
+	}
+
+	// Create indexing run record
+	runStore := &models.IndexingRunStore{Pool: cfg.Pool}
+	indexingRun := &models.IndexingRun{
+		RepoID:          repo.ID,
+		CommitSHA:       models.Ptr(repoInfo.HeadCommitSHA),
+		Mode:            runMode,
+		ModelExtraction: models.Ptr(cfg.ExtractionModel),
+		ModelSynthesis:  models.Ptr(cfg.SynthesisModel),
+		Concurrency:     models.Ptr(cfg.Concurrency),
+	}
+	if err := runStore.Create(ctx, indexingRun); err != nil {
+		log.Printf("[warn] failed to create indexing run record: %v", err)
+	}
+
 	// --force: clear all existing data for this repo
 	if cfg.Force {
 		log.Println("[force] Clearing existing data...")
@@ -103,107 +141,140 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		log.Println("[force] Done, re-extracting from scratch")
 	}
 
-	// Phase 1: Structural inventory
-	fmt.Println("Phase 1: Structural inventory...")
-	manifest, err := RunPhase1(repoInfo.RootPath)
-	if err != nil {
-		return nil, fmt.Errorf("phase 1: %w", err)
-	}
-
-	fmt.Printf("  Files: %d total, %d analyzable\n", manifest.Stats.TotalFiles, manifest.Stats.AnalyzableFiles)
-	fmt.Printf("  Stack: %v\n", manifest.Stack.Languages)
-
-	// Cost estimate
-	costEst := EstimateCost(manifest)
-	result.CostEstimate = costEst
-	fmt.Println()
-	fmt.Println(FormatCost(costEst))
-	fmt.Println()
-
-	// Structured dependency parsing (deterministic, no LLM)
-	deps := ExtractDependencies(repoInfo.RootPath, manifest)
-	if len(deps) > 0 {
-		entityStore := &models.EntityStore{Pool: cfg.Pool}
-		relStore := &models.RelationshipStore{Pool: cfg.Pool}
-		factStore := &models.FactStore{Pool: cfg.Pool}
-
-		// Find or create repo entity
-		repoEntity, _ := entityStore.FindByQualifiedName(ctx, repo.ID, repoName)
-		if repoEntity == nil {
-			repoEntity = &models.Entity{
-				RepoID:        repo.ID,
-				Kind:          models.EntityService,
-				Name:          repoName,
-				QualifiedName: repoName,
-				Summary:       models.Ptr("Repository root entity"),
-			}
-			entityStore.Upsert(ctx, repoEntity)
+	// Phase 1: Structural inventory (always runs unless phases filter excludes it)
+	var manifest *Manifest
+	if shouldRunPhase(cfg.Phases, "phase1") || len(cfg.Phases) == 0 {
+		fmt.Println("Phase 1: Structural inventory...")
+		manifest, err = RunPhase1(repoInfo.RootPath)
+		if err != nil {
+			return nil, fmt.Errorf("phase 1: %w", err)
 		}
 
-		directCount, indirectCount := 0, 0
-		for _, dep := range deps {
-			if dep.Dev {
-				indirectCount++
-			} else {
-				directCount++
-			}
+		fmt.Printf("  Files: %d total, %d analyzable\n", manifest.Stats.TotalFiles, manifest.Stats.AnalyzableFiles)
+		fmt.Printf("  Stack: %v\n", manifest.Stack.Languages)
 
-			// Create entity for the dependency
-			depEntity := &models.Entity{
-				RepoID:        repo.ID,
-				Kind:          models.EntityModule,
-				Name:          dep.Name,
-				QualifiedName: dep.Name,
-				Summary:       models.Ptr(fmt.Sprintf("External dependency from %s", dep.Source)),
-			}
-			if err := entityStore.Upsert(ctx, depEntity); err != nil {
-				logVerboseF("[deps] warn: upserting dep entity %s: %v", dep.Name, err)
-				continue
-			}
+		indexingRun.FilesTotal = models.Ptr(manifest.Stats.TotalFiles)
 
-			// Create depends_on relationship
-			rel := &models.Relationship{
-				RepoID:       repo.ID,
-				FromEntityID: repoEntity.ID,
-				ToEntityID:   depEntity.ID,
-				Kind:         models.RelDependsOn,
-				Description:  models.Ptr(fmt.Sprintf("Dependency from %s", dep.Source)),
-				Strength:     models.StrengthStrong,
-				Provenance: []models.Provenance{{
-					SourceType: "file",
-					Repo:       repoName,
-					Ref:        dep.Source,
-				}},
-			}
-			relStore.Upsert(ctx, rel)
+		// Cost estimate
+		costEst := EstimateCost(manifest)
+		result.CostEstimate = costEst
+		fmt.Println()
+		fmt.Println(FormatCost(costEst))
+		fmt.Println()
 
-			// Create version fact if available
-			if dep.Version != "" {
-				devStr := ""
-				if dep.Dev {
-					devStr = " (dev/indirect)"
+		// Stale entity cleanup: remove entities whose paths no longer exist in the repo
+		if !cfg.Force {
+			entityStore := &models.EntityStore{Pool: cfg.Pool}
+			stalePaths, _ := entityStore.ListDistinctPaths(ctx, repo.ID)
+			if len(stalePaths) > 0 {
+				// Build a set of current file paths
+				currentFiles := make(map[string]bool)
+				for _, fi := range manifest.Files {
+					currentFiles[fi.Path] = true
 				}
-				fact := &models.Fact{
-					EntityID:   depEntity.ID,
-					RepoID:     repo.ID,
-					Claim:      fmt.Sprintf("Required at version %s%s", dep.Version, devStr),
-					Dimension:  models.DimensionWhat,
-					Category:   models.CategoryConstraint,
-					Confidence: models.ConfidenceHigh,
+
+				staleCount := 0
+				for _, p := range stalePaths {
+					if !currentFiles[p] {
+						if err := entityStore.DeleteByPath(ctx, repo.ID, p); err != nil {
+							log.Printf("[stale] warn: cleaning up %s: %v", p, err)
+						} else {
+							staleCount++
+							logVerboseF("[stale] removed entities for deleted file: %s", p)
+						}
+					}
+				}
+				if staleCount > 0 {
+					fmt.Printf("  Cleaned up entities from %d deleted/renamed files\n", staleCount)
+				}
+			}
+		}
+
+		// Structured dependency parsing (deterministic, no LLM)
+		deps := ExtractDependencies(repoInfo.RootPath, manifest)
+		if len(deps) > 0 {
+			entityStore := &models.EntityStore{Pool: cfg.Pool}
+			relStore := &models.RelationshipStore{Pool: cfg.Pool}
+			factStore := &models.FactStore{Pool: cfg.Pool}
+
+			// Find or create repo entity
+			repoEntity, _ := entityStore.FindByQualifiedName(ctx, repo.ID, repoName)
+			if repoEntity == nil {
+				repoEntity = &models.Entity{
+					RepoID:        repo.ID,
+					Kind:          models.EntityService,
+					Name:          repoName,
+					QualifiedName: repoName,
+					Summary:       models.Ptr("Repository root entity"),
+				}
+				entityStore.Upsert(ctx, repoEntity)
+			}
+
+			directCount, indirectCount := 0, 0
+			for _, dep := range deps {
+				if dep.Dev {
+					indirectCount++
+				} else {
+					directCount++
+				}
+
+				// Create entity for the dependency
+				depEntity := &models.Entity{
+					RepoID:        repo.ID,
+					Kind:          models.EntityModule,
+					Name:          dep.Name,
+					QualifiedName: dep.Name,
+					Summary:       models.Ptr(fmt.Sprintf("External dependency from %s", dep.Source)),
+				}
+				if err := entityStore.Upsert(ctx, depEntity); err != nil {
+					logVerboseF("[deps] warn: upserting dep entity %s: %v", dep.Name, err)
+					continue
+				}
+
+				// Create depends_on relationship
+				rel := &models.Relationship{
+					RepoID:       repo.ID,
+					FromEntityID: repoEntity.ID,
+					ToEntityID:   depEntity.ID,
+					Kind:         models.RelDependsOn,
+					Description:  models.Ptr(fmt.Sprintf("Dependency from %s", dep.Source)),
+					Strength:     models.StrengthStrong,
 					Provenance: []models.Provenance{{
 						SourceType: "file",
 						Repo:       repoName,
 						Ref:        dep.Source,
 					}},
 				}
-				factStore.Create(ctx, fact)
+				relStore.Upsert(ctx, rel)
+
+				// Create version fact if available
+				if dep.Version != "" {
+					devStr := ""
+					if dep.Dev {
+						devStr = " (dev/indirect)"
+					}
+					fact := &models.Fact{
+						EntityID:   depEntity.ID,
+						RepoID:     repo.ID,
+						Claim:      fmt.Sprintf("Required at version %s%s", dep.Version, devStr),
+						Dimension:  models.DimensionWhat,
+						Category:   models.CategoryConstraint,
+						Confidence: models.ConfidenceHigh,
+						Provenance: []models.Provenance{{
+							SourceType: "file",
+							Repo:       repoName,
+							Ref:        dep.Source,
+						}},
+					}
+					factStore.Create(ctx, fact)
+				}
+
+				logVerboseF("[deps] %s: %s %s", dep.Source, dep.Name, dep.Version)
 			}
 
-			logVerboseF("[deps] %s: %s %s", dep.Source, dep.Name, dep.Version)
+			log.Printf("[deps] parsed %d dependencies (%d direct, %d dev/indirect) from manifest files",
+				len(deps), directCount, indirectCount)
 		}
-
-		log.Printf("[deps] parsed %d dependencies (%d direct, %d dev/indirect) from manifest files",
-			len(deps), directCount, indirectCount)
 	}
 
 	if cfg.DryRun {
@@ -216,58 +287,45 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		return result, fmt.Errorf("cancelled: %w", err)
 	}
 
+	// Track whether Phase 2 processed any files (for smart update logic)
+	phase2Processed := false
+
 	// Phase 2: File analysis
-	fmt.Println("Phase 2: File analysis...")
-	phase2Stats, err := RunPhase2(ctx, Phase2Config{
-		RepoID:      repo.ID,
-		RepoName:    repoName,
-		RepoPath:    repoInfo.RootPath,
-		Manifest:    manifest,
-		Model:       cfg.ExtractionModel,
-		Concurrency: cfg.Concurrency,
-		Pool:        cfg.Pool,
-		LLM:         cfg.LLM,
-	})
-	if err != nil {
-		return result, fmt.Errorf("phase 2: %w", err)
-	}
-	result.Phase2Stats = phase2Stats
-	fmt.Printf("  Processed: %d files, Skipped: %d, Entities: %d, Facts: %d\n",
-		phase2Stats.FilesProcessed, phase2Stats.FilesSkipped, phase2Stats.EntitiesCreated, phase2Stats.FactsCreated)
+	if shouldRunPhase(cfg.Phases, "phase2") {
+		if manifest == nil {
+			// Need manifest for phase2 even if phase1 was skipped
+			manifest, err = RunPhase1(repoInfo.RootPath)
+			if err != nil {
+				return nil, fmt.Errorf("phase 1 (for phase 2): %w", err)
+			}
+		}
 
-	if err := ctx.Err(); err != nil {
-		fmt.Println("\nInterrupted — progress saved. Re-run to continue.")
-		return result, nil
-	}
+		fmt.Println("Phase 2: File analysis...")
+		phase2Stats, err := RunPhase2(ctx, Phase2Config{
+			RepoID:      repo.ID,
+			RepoName:    repoName,
+			RepoPath:    repoInfo.RootPath,
+			Manifest:    manifest,
+			Model:       cfg.ExtractionModel,
+			Concurrency: cfg.Concurrency,
+			Pool:        cfg.Pool,
+			LLM:         cfg.LLM,
+		})
+		if err != nil {
+			return result, fmt.Errorf("phase 2: %w", err)
+		}
+		result.Phase2Stats = phase2Stats
+		fmt.Printf("  Processed: %d files, Skipped: %d, Entities: %d, Facts: %d\n",
+			phase2Stats.FilesProcessed, phase2Stats.FilesSkipped, phase2Stats.EntitiesCreated, phase2Stats.FactsCreated)
 
-	// Git log analysis (runs alongside phase 2 conceptually, but after for simplicity)
-	fmt.Println("Git log analysis...")
-	if err := RunGitLogAnalysis(ctx, GitLogConfig{
-		RepoID:   repo.ID,
-		RepoName: repoName,
-		RepoPath: repoInfo.RootPath,
-		Model:    cfg.ExtractionModel,
-		Pool:     cfg.Pool,
-		LLM:      cfg.LLM,
-	}); err != nil {
-		fmt.Printf("  Warning: git log analysis failed: %v\n", err)
-	}
+		indexingRun.FilesAnalyzed = models.Ptr(phase2Stats.FilesProcessed)
+		indexingRun.FilesSkipped = models.Ptr(phase2Stats.FilesSkipped)
+		indexingRun.EntitiesCreated = models.Ptr(phase2Stats.EntitiesCreated)
+		indexingRun.FactsCreated = models.Ptr(phase2Stats.FactsCreated)
 
-	if err := ctx.Err(); err != nil {
-		fmt.Println("\nInterrupted — progress saved. Re-run to continue.")
-		return result, nil
-	}
-
-	// Phase 4: Cross-module synthesis (non-fatal — data is still queryable without it)
-	fmt.Println("Phase 4: Cross-module synthesis...")
-	if err := RunPhase4(ctx, Phase4Config{
-		RepoID:   repo.ID,
-		RepoName: repoName,
-		Model:    cfg.SynthesisModel,
-		Pool:     cfg.Pool,
-		LLM:      cfg.LLM,
-	}); err != nil {
-		fmt.Printf("  Warning: phase 4 synthesis failed: %v\n", err)
+		if phase2Stats.FilesProcessed > 0 {
+			phase2Processed = true
+		}
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -275,16 +333,116 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		return result, nil
 	}
 
-	// Phase 5: Repo summary (non-fatal — data is still queryable without it)
-	fmt.Println("Phase 5: Repository summary...")
-	if err := RunPhase5(ctx, Phase5Config{
-		RepoID:   repo.ID,
-		RepoName: repoName,
-		Model:    cfg.SynthesisModel,
-		Pool:     cfg.Pool,
-		LLM:      cfg.LLM,
-	}); err != nil {
-		fmt.Printf("  Warning: phase 5 summary failed: %v\n", err)
+	// Smart update: if no files changed in Phase 2 and this is an incremental run (not --force, no --phase),
+	// skip later phases since the data is already up to date.
+	if !phase2Processed && runMode == "incremental" && len(cfg.Phases) == 0 {
+		fmt.Println("\nNo files changed — knowledge base is up to date.")
+		indexingRun.DurationMS = models.Ptr(time.Since(start).Milliseconds())
+		runStore.Complete(ctx, indexingRun)
+		result.Duration = time.Since(start)
+		return result, nil
+	}
+
+	// Phase 2.5: Backfill orphan entities (entities with no facts)
+	if shouldRunPhase(cfg.Phases, "backfill") || shouldRunPhase(cfg.Phases, "phase2") {
+		fmt.Println("Phase 2.5: Backfill orphan entities...")
+		backfillStats, err := RunBackfill(ctx, BackfillConfig{
+			RepoID:      repo.ID,
+			RepoName:    repoName,
+			RepoPath:    repoInfo.RootPath,
+			Model:       cfg.ExtractionModel,
+			Concurrency: cfg.Concurrency,
+			Pool:        cfg.Pool,
+			LLM:         cfg.LLM,
+		})
+		if err != nil {
+			fmt.Printf("  Warning: backfill failed: %v\n", err)
+		} else if backfillStats.OrphanEntities > 0 {
+			fmt.Printf("  Backfilled: %d facts, %d relationships for %d orphan entities\n",
+				backfillStats.FactsCreated, backfillStats.RelsCreated, backfillStats.OrphanEntities)
+			indexingRun.OrphanEntities = models.Ptr(backfillStats.OrphanEntities)
+			indexingRun.BackfillFacts = models.Ptr(backfillStats.FactsCreated)
+			indexingRun.BackfillRels = models.Ptr(backfillStats.RelsCreated)
+		} else {
+			fmt.Println("  No orphan entities found.")
+		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		fmt.Println("\nInterrupted — progress saved. Re-run to continue.")
+		return result, nil
+	}
+
+	// Git log analysis
+	if shouldRunPhase(cfg.Phases, "gitlog") || shouldRunPhase(cfg.Phases, "phase2") {
+		fmt.Println("Git log analysis...")
+		if err := RunGitLogAnalysis(ctx, GitLogConfig{
+			RepoID:   repo.ID,
+			RepoName: repoName,
+			RepoPath: repoInfo.RootPath,
+			Model:    cfg.ExtractionModel,
+			Pool:     cfg.Pool,
+			LLM:      cfg.LLM,
+		}); err != nil {
+			fmt.Printf("  Warning: git log analysis failed: %v\n", err)
+		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		fmt.Println("\nInterrupted — progress saved. Re-run to continue.")
+		return result, nil
+	}
+
+	// Phase 4: Cross-module synthesis
+	if shouldRunPhase(cfg.Phases, "phase4") {
+		// If re-running phase4, reset the existing job so it can re-run
+		if len(cfg.Phases) > 0 {
+			jobStore := &models.JobStore{Pool: cfg.Pool}
+			existing, _ := jobStore.GetByTarget(ctx, repo.ID, models.PhasePhase4, "synthesis")
+			if existing != nil && existing.Status == models.JobCompleted {
+				// Delete the old completed job so phase4 will run fresh
+				cfg.Pool.Exec(ctx, `DELETE FROM extraction_jobs WHERE id = $1`, existing.ID)
+			}
+		}
+
+		fmt.Println("Phase 4: Cross-module synthesis...")
+		if err := RunPhase4(ctx, Phase4Config{
+			RepoID:   repo.ID,
+			RepoName: repoName,
+			Model:    cfg.SynthesisModel,
+			Pool:     cfg.Pool,
+			LLM:      cfg.LLM,
+		}); err != nil {
+			fmt.Printf("  Warning: phase 4 synthesis failed: %v\n", err)
+		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		fmt.Println("\nInterrupted — progress saved. Re-run to continue.")
+		return result, nil
+	}
+
+	// Phase 5: Repo summary
+	if shouldRunPhase(cfg.Phases, "phase5") {
+		// If re-running phase5, reset the existing job
+		if len(cfg.Phases) > 0 {
+			jobStore := &models.JobStore{Pool: cfg.Pool}
+			existing, _ := jobStore.GetByTarget(ctx, repo.ID, models.PhasePhase5, "summary")
+			if existing != nil && existing.Status == models.JobCompleted {
+				cfg.Pool.Exec(ctx, `DELETE FROM extraction_jobs WHERE id = $1`, existing.ID)
+			}
+		}
+
+		fmt.Println("Phase 5: Repository summary...")
+		if err := RunPhase5(ctx, Phase5Config{
+			RepoID:   repo.ID,
+			RepoName: repoName,
+			Model:    cfg.SynthesisModel,
+			Pool:     cfg.Pool,
+			LLM:      cfg.LLM,
+		}); err != nil {
+			fmt.Printf("  Warning: phase 5 summary failed: %v\n", err)
+		}
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -293,9 +451,11 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	}
 
 	// Generate embeddings for all facts
-	fmt.Println("Generating embeddings...")
-	if err := generateEmbeddings(ctx, cfg.Pool, cfg.Embedder, repo.ID); err != nil {
-		fmt.Printf("  Warning: embedding generation failed: %v\n", err)
+	if shouldRunPhase(cfg.Phases, "embedding") || len(cfg.Phases) == 0 {
+		fmt.Println("Generating embeddings...")
+		if err := generateEmbeddings(ctx, cfg.Pool, cfg.Embedder, repo.ID); err != nil {
+			fmt.Printf("  Warning: embedding generation failed: %v\n", err)
+		}
 	}
 
 	// Compute quality score
@@ -308,12 +468,26 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		fmt.Printf("  %s\n", FormatQualityScore(qs))
 		fmt.Println()
 		fmt.Print(FormatQualityDetails(qs))
+
+		indexingRun.QualityOverall = models.Ptr(qs.Overall)
+		indexingRun.QualityEntityCov = models.Ptr(qs.EntityCoverage)
+		indexingRun.QualityFactDensity = models.Ptr(qs.FactDensity)
+		indexingRun.QualityRelConnect = models.Ptr(qs.RelConnectivity)
+		indexingRun.QualityDimCoverage = models.Ptr(qs.DimensionCoverage)
+		indexingRun.QualityParseRate = models.Ptr(qs.ParseSuccessRate)
 	}
 
 	// Update repo record
 	repoStore.UpdateLastIndexed(ctx, repo.ID, repoInfo.HeadCommitSHA)
 
 	result.Duration = time.Since(start)
+	indexingRun.DurationMS = models.Ptr(result.Duration.Milliseconds())
+
+	// Persist indexing run metrics
+	if err := runStore.Complete(ctx, indexingRun); err != nil {
+		log.Printf("[warn] failed to complete indexing run record: %v", err)
+	}
+
 	fmt.Printf("\nIndexing complete in %s\n", result.Duration.Round(time.Second))
 
 	return result, nil

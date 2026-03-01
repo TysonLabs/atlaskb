@@ -75,7 +75,14 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 		coreEntities = coreEntities[:60]
 	}
 
+	// Build a plain list of all entity qualified_names for the model to reference
 	var sb strings.Builder
+	sb.WriteString("## AVAILABLE ENTITIES (use ONLY these exact strings for entity_name, from, and to fields):\n")
+	for _, e := range coreEntities {
+		fmt.Fprintf(&sb, "- %s\n", e.QualifiedName)
+	}
+	sb.WriteString("\n")
+
 	for _, e := range coreEntities {
 		fmt.Fprintf(&sb, "## Entity: %s (kind: %s)\n", e.QualifiedName, e.Kind)
 		summary := ""
@@ -110,41 +117,21 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 
 	prompt := Phase4Prompt(cfg.RepoName, context)
 
-	var result *Phase4Result
-	var lastResp *llm.Response
-	const maxRetries = 3
 	messages := []llm.Message{
 		{Role: "user", Content: prompt},
 	}
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		resp, err := cfg.LLM.Complete(ctx, cfg.Model, systemPromptPhase4, messages, 8192, SchemaPhase4)
-		if err != nil {
-			if attempt == maxRetries {
-				jobStore.Fail(ctx, claimed.ID, err.Error())
-				return fmt.Errorf("LLM call (attempt %d/%d): %w", attempt, maxRetries, err)
-			}
-			fmt.Printf("  Phase 4 LLM attempt %d/%d failed: %v, retrying...\n", attempt, maxRetries, err)
-			continue
-		}
-
-		result, err = ParsePhase4(resp.Content)
-		if err != nil {
-			if attempt == maxRetries {
-				jobStore.Fail(ctx, claimed.ID, err.Error())
-				return fmt.Errorf("parsing phase 4 result (attempt %d/%d): %w", attempt, maxRetries, err)
-			}
-			fmt.Printf("  Phase 4 parse attempt %d/%d failed: %v, retrying...\n", attempt, maxRetries, err)
-			// Add error correction context for next attempt
-			messages = []llm.Message{
-				{Role: "user", Content: prompt},
-				{Role: "assistant", Content: resp.Content},
-				{Role: "user", Content: fmt.Sprintf("Your response was not valid JSON. Parse error: %v\nPlease respond with ONLY valid JSON, no commentary. Start with { and end with }.", err)},
-			}
-			continue
-		}
-		lastResp = resp
-		break
+	lastResp, attempts, err := callLLMWithRetry(ctx, cfg.LLM, cfg.Model, systemPromptPhase4, messages, 8192, SchemaPhase4, DefaultRetryConfig)
+	if err != nil {
+		jobStore.Fail(ctx, claimed.ID, err.Error())
+		return fmt.Errorf("LLM call: %w", err)
 	}
+
+	result, err := ParsePhase4(lastResp.Content)
+	if err != nil {
+		jobStore.Fail(ctx, claimed.ID, err.Error())
+		return fmt.Errorf("parsing phase 4 result: %w", err)
+	}
+	_ = attempts
 
 	// Find or create repo-level entity
 	repoEntity, _ := entityStore.FindByQualifiedName(ctx, cfg.RepoID, cfg.RepoName)
@@ -185,16 +172,16 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 	// Store data_flows as relationships
 	dataFlowsStored := 0
 	for _, df := range result.DataFlows {
-		fromEntity, _ := entityStore.FindByQualifiedName(ctx, cfg.RepoID, df.FromModule)
-		toEntity, _ := entityStore.FindByQualifiedName(ctx, cfg.RepoID, df.ToModule)
-		if fromEntity == nil || toEntity == nil {
+		fromID, fromOK := resolveEntity(ctx, entityStore, cfg.RepoID, df.FromModule)
+		toID, toOK := resolveEntity(ctx, entityStore, cfg.RepoID, df.ToModule)
+		if !fromOK || !toOK {
 			logVerboseF("[phase4] data_flow skipped (entity not found): %s -> %s", df.FromModule, df.ToModule)
 			continue
 		}
 		rel := &models.Relationship{
 			RepoID:       cfg.RepoID,
-			FromEntityID: fromEntity.ID,
-			ToEntityID:   toEntity.ID,
+			FromEntityID: fromID,
+			ToEntityID:   toID,
 			Kind:         models.RelProduces,
 			Description:  models.Ptr(fmt.Sprintf("%s (mechanism: %s)", df.Description, df.Mechanism)),
 			Strength:     models.StrengthModerate,
@@ -243,13 +230,13 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 	// Store extracted facts
 	factsStored := 0
 	for _, ef := range result.Facts {
-		entity, _ := entityStore.FindByQualifiedName(ctx, cfg.RepoID, ef.EntityName)
-		if entity == nil {
+		entityID, ok := resolveEntity(ctx, entityStore, cfg.RepoID, ef.EntityName)
+		if !ok {
 			logVerboseF("[phase4] fact skipped (entity not found): %s", ef.EntityName)
 			continue
 		}
 		fact := &models.Fact{
-			EntityID:   entity.ID,
+			EntityID:   entityID,
 			RepoID:     cfg.RepoID,
 			Claim:      ef.Claim,
 			Dimension:  ef.Dimension,
@@ -271,16 +258,16 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 	// Store relationships
 	relsStored := 0
 	for _, er := range result.Relationships {
-		fromEntity, _ := entityStore.FindByQualifiedName(ctx, cfg.RepoID, er.From)
-		toEntity, _ := entityStore.FindByQualifiedName(ctx, cfg.RepoID, er.To)
-		if fromEntity == nil || toEntity == nil {
+		fromID, fromOK := resolveEntity(ctx, entityStore, cfg.RepoID, er.From)
+		toID, toOK := resolveEntity(ctx, entityStore, cfg.RepoID, er.To)
+		if !fromOK || !toOK {
 			logVerboseF("[phase4] relationship skipped (entity not found): %s -> %s", er.From, er.To)
 			continue
 		}
 		rel := &models.Relationship{
 			RepoID:       cfg.RepoID,
-			FromEntityID: fromEntity.ID,
-			ToEntityID:   toEntity.ID,
+			FromEntityID: fromID,
+			ToEntityID:   toID,
 			Kind:         er.Kind,
 			Description:  models.Ptr(er.Description),
 			Strength:     er.Strength,
@@ -302,5 +289,5 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 
 	tokens := lastResp.InputTokens + lastResp.OutputTokens
 	costUSD := float64(lastResp.InputTokens)/1_000_000*OpusInputPer1M + float64(lastResp.OutputTokens)/1_000_000*OpusOutputPer1M
-	return jobStore.Complete(ctx, claimed.ID, tokens, costUSD)
+	return jobStore.CompleteWithDetails(ctx, claimed.ID, tokens, costUSD, lastResp.Model, attempts)
 }

@@ -94,6 +94,9 @@ var (
 	trailingComma = regexp.MustCompile(`,\s*([}\]])`)
 	// Match unquoted JSON keys: word characters after { or , followed by :
 	unquotedKey   = regexp.MustCompile(`([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:`)
+	// Match missing comma: end of value followed by newline/whitespace then a quoted key
+	// e.g. "value"\n  "key": → "value",\n  "key":
+	missingComma  = regexp.MustCompile(`("|\d|true|false|null|\]|\})\s*\n(\s*")`)
 )
 
 // CleanJSON strips markdown code fences and other common LLM output artifacts.
@@ -192,10 +195,95 @@ func CleanJSON(raw string) string {
 	// Match patterns like: "key": word_value (where word_value is not a JSON literal)
 	result = fixUnquotedValues(result)
 
+	// Fix missing commas between JSON entries (common with local models)
+	result = fixMissingCommas(result)
+
 	// Fix trailing commas after cleanup
 	result = trailingComma.ReplaceAllString(result, `$1`)
 
 	return result
+}
+
+// fixMissingCommas inserts commas between JSON entries where they're missing.
+// Common pattern: "value"\n  "key": → "value",\n  "key":
+// Works in a string-aware manner to avoid modifying content inside quoted strings.
+func fixMissingCommas(s string) string {
+	var out strings.Builder
+	out.Grow(len(s) + 100)
+	inString := false
+	escaped := false
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+
+		if escaped {
+			out.WriteByte(c)
+			escaped = false
+			continue
+		}
+		if c == '\\' && inString {
+			out.WriteByte(c)
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+			out.WriteByte(c)
+			continue
+		}
+		if inString {
+			out.WriteByte(c)
+			continue
+		}
+
+		// Outside a string: check if we're at a value-end followed by whitespace then a quote (key start)
+		// Value ends: ", digit, e/E (exponent), ], }
+		if c == '\n' || c == '\r' {
+			// Look back for a value-ending character
+			prevNonWS := lastNonWhitespace(out.String())
+			// Look ahead for a key-starting quote
+			nextNonWS := nextNonWhitespaceChar(s, i+1)
+
+			needsComma := false
+			if prevNonWS == '"' || prevNonWS == ']' || prevNonWS == '}' ||
+				(prevNonWS >= '0' && prevNonWS <= '9') ||
+				prevNonWS == 'e' || prevNonWS == 'E' {
+				if nextNonWS == '"' {
+					needsComma = true
+				}
+			}
+
+			if needsComma {
+				out.WriteByte(',')
+			}
+			out.WriteByte(c)
+			continue
+		}
+
+		out.WriteByte(c)
+	}
+
+	return out.String()
+}
+
+func lastNonWhitespace(s string) byte {
+	for i := len(s) - 1; i >= 0; i-- {
+		c := s[i]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			return c
+		}
+	}
+	return 0
+}
+
+func nextNonWhitespaceChar(s string, from int) byte {
+	for i := from; i < len(s); i++ {
+		c := s[i]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			return c
+		}
+	}
+	return 0
 }
 
 // fixUnquotedValues wraps unquoted string values in JSON with double quotes.
@@ -424,6 +512,78 @@ func sanitizeRelationships(rels []ExtractedRelation) []ExtractedRelation {
 	return out
 }
 
+// normalizeQualifiedName cleans up a qualified_name produced by the LLM:
+//   - Strip repo-name prefixes (e.g. "atlaskb-typescript-test-repo::src::channels::HttpChannel" → "channels::HttpChannel")
+//   - Replace "/" with "::" in package paths
+//   - Collapse multiple "::" segments to just package::Name
+//   - Ensure "." is only used between type and method
+func normalizeQualifiedName(qn string) string {
+	// Replace "/" with "::"
+	qn = strings.ReplaceAll(qn, "/", "::")
+
+	// Split on "::" to analyze segments
+	parts := strings.Split(qn, "::")
+
+	// Remove empty segments
+	var cleaned []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			cleaned = append(cleaned, p)
+		}
+	}
+	if len(cleaned) == 0 {
+		return qn
+	}
+
+	// Strip known prefixes: "src", repo-name-like segments (contain hyphens and "test" or "repo")
+	// Also strip segments that look like path components (lowercase, no dots)
+	// Strategy: keep only the last 2 segments (package::Name or package::Type.Method)
+	// unless there are exactly 1 or 2 segments already
+	if len(cleaned) > 2 {
+		// Keep only the last 2 segments: the package and the symbol
+		cleaned = cleaned[len(cleaned)-2:]
+	}
+
+	return strings.Join(cleaned, "::")
+}
+
+// normalizeQualifiedNames normalizes all qualified_names in a Phase2Result.
+func normalizeQualifiedNames(result *Phase2Result) {
+	// Build a mapping from old to new names for updating references
+	nameMap := make(map[string]string)
+
+	for i := range result.Entities {
+		old := result.Entities[i].QualifiedName
+		normalized := normalizeQualifiedName(old)
+		if normalized != old {
+			nameMap[old] = normalized
+		}
+		result.Entities[i].QualifiedName = normalized
+	}
+
+	for i := range result.Facts {
+		if newName, ok := nameMap[result.Facts[i].EntityName]; ok {
+			result.Facts[i].EntityName = newName
+		} else {
+			result.Facts[i].EntityName = normalizeQualifiedName(result.Facts[i].EntityName)
+		}
+	}
+
+	for i := range result.Relationships {
+		if newName, ok := nameMap[result.Relationships[i].From]; ok {
+			result.Relationships[i].From = newName
+		} else {
+			result.Relationships[i].From = normalizeQualifiedName(result.Relationships[i].From)
+		}
+		if newName, ok := nameMap[result.Relationships[i].To]; ok {
+			result.Relationships[i].To = newName
+		} else {
+			result.Relationships[i].To = normalizeQualifiedName(result.Relationships[i].To)
+		}
+	}
+}
+
 func ParsePhase2(raw string) (*Phase2Result, error) {
 	cleaned := CleanJSON(raw)
 	var result Phase2Result
@@ -433,6 +593,7 @@ func ParsePhase2(raw string) (*Phase2Result, error) {
 	result.Entities = sanitizeEntities(result.Entities)
 	result.Facts = sanitizeFacts(result.Facts)
 	result.Relationships = sanitizeRelationships(result.Relationships)
+	normalizeQualifiedNames(&result)
 	return &result, nil
 }
 
@@ -444,6 +605,18 @@ func ParsePhase4(raw string) (*Phase4Result, error) {
 	}
 	result.Facts = sanitizeFacts(result.Facts)
 	result.Relationships = sanitizeRelationships(result.Relationships)
+	// Normalize entity references in Phase 4 results
+	for i := range result.Facts {
+		result.Facts[i].EntityName = normalizeQualifiedName(result.Facts[i].EntityName)
+	}
+	for i := range result.Relationships {
+		result.Relationships[i].From = normalizeQualifiedName(result.Relationships[i].From)
+		result.Relationships[i].To = normalizeQualifiedName(result.Relationships[i].To)
+	}
+	for i := range result.DataFlows {
+		result.DataFlows[i].FromModule = normalizeQualifiedName(result.DataFlows[i].FromModule)
+		result.DataFlows[i].ToModule = normalizeQualifiedName(result.DataFlows[i].ToModule)
+	}
 	return &result, nil
 }
 

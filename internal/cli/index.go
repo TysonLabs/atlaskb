@@ -14,6 +14,7 @@ var (
 	indexForce       bool
 	indexYes         bool
 	indexConcurrency int
+	indexPhases      []string
 )
 
 var indexCmd = &cobra.Command{
@@ -29,6 +30,7 @@ func init() {
 	indexCmd.Flags().BoolVar(&indexForce, "force", false, "re-analyze all files even if unchanged")
 	indexCmd.Flags().BoolVarP(&indexYes, "yes", "y", false, "skip confirmation prompts")
 	indexCmd.Flags().IntVar(&indexConcurrency, "concurrency", 0, "number of parallel LLM calls (default from config)")
+	indexCmd.Flags().StringSliceVar(&indexPhases, "phase", nil, "run only specific phases (phase1, phase2, backfill, gitlog, phase4, phase5, embedding)")
 	rootCmd.AddCommand(indexCmd)
 }
 
@@ -54,6 +56,7 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		LLM:             llmClient,
 		Embedder:        embedClient,
 		Verbose:         verbose,
+		Phases:          indexPhases,
 	})
 	if err != nil {
 		return fmt.Errorf("indexing failed: %w", err)

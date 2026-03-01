@@ -178,8 +178,47 @@ type ExtractionJob struct {
 	ErrorMessage *string    `json:"error_message,omitempty"`
 	TokensUsed   *int       `json:"tokens_used,omitempty"`
 	CostUSD      *float64   `json:"cost_usd,omitempty"`
+	ModelUsed    *string    `json:"model_used,omitempty"`
+	AttemptCount int        `json:"attempt_count"`
 	StartedAt    *time.Time `json:"started_at,omitempty"`
 	CompletedAt  *time.Time `json:"completed_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+type IndexingRun struct {
+	ID               uuid.UUID  `json:"id"`
+	RepoID           uuid.UUID  `json:"repo_id"`
+	CommitSHA        *string    `json:"commit_sha,omitempty"`
+	Mode             string     `json:"mode"`
+	ModelExtraction  *string    `json:"model_extraction,omitempty"`
+	ModelSynthesis   *string    `json:"model_synthesis,omitempty"`
+	Concurrency      *int       `json:"concurrency,omitempty"`
+
+	FilesTotal       *int       `json:"files_total,omitempty"`
+	FilesAnalyzed    *int       `json:"files_analyzed,omitempty"`
+	FilesSkipped     *int       `json:"files_skipped,omitempty"`
+	EntitiesCreated  *int       `json:"entities_created,omitempty"`
+	FactsCreated     *int       `json:"facts_created,omitempty"`
+	RelsCreated      *int       `json:"rels_created,omitempty"`
+	DecisionsCreated *int       `json:"decisions_created,omitempty"`
+
+	OrphanEntities   *int       `json:"orphan_entities,omitempty"`
+	BackfillFacts    *int       `json:"backfill_facts,omitempty"`
+	BackfillRels     *int       `json:"backfill_rels,omitempty"`
+
+	TotalTokens      *int       `json:"total_tokens,omitempty"`
+	TotalCostUSD     *float64   `json:"total_cost_usd,omitempty"`
+
+	QualityOverall     *float64 `json:"quality_overall,omitempty"`
+	QualityEntityCov   *float64 `json:"quality_entity_cov,omitempty"`
+	QualityFactDensity *float64 `json:"quality_fact_density,omitempty"`
+	QualityRelConnect  *float64 `json:"quality_rel_connect,omitempty"`
+	QualityDimCoverage *float64 `json:"quality_dim_coverage,omitempty"`
+	QualityParseRate   *float64 `json:"quality_parse_rate,omitempty"`
+
+	DurationMS       *int64     `json:"duration_ms,omitempty"`
+	StartedAt        time.Time  `json:"started_at"`
+	CompletedAt      *time.Time `json:"completed_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
 }

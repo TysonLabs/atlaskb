@@ -44,9 +44,9 @@ func (s *JobStore) ClaimNext(ctx context.Context, repoID uuid.UUID, phase string
 		   FOR UPDATE SKIP LOCKED
 		   LIMIT 1
 		 )
-		 RETURNING id, repo_id, phase, target, content_hash, status, error_message, tokens_used, cost_usd, started_at, completed_at, created_at, updated_at`,
+		 RETURNING id, repo_id, phase, target, content_hash, status, error_message, tokens_used, cost_usd, model_used, attempt_count, started_at, completed_at, created_at, updated_at`,
 		repoID, phase, now,
-	).Scan(&j.ID, &j.RepoID, &j.Phase, &j.Target, &j.ContentHash, &j.Status, &j.ErrorMessage, &j.TokensUsed, &j.CostUSD, &j.StartedAt, &j.CompletedAt, &j.CreatedAt, &j.UpdatedAt)
+	).Scan(&j.ID, &j.RepoID, &j.Phase, &j.Target, &j.ContentHash, &j.Status, &j.ErrorMessage, &j.TokensUsed, &j.CostUSD, &j.ModelUsed, &j.AttemptCount, &j.StartedAt, &j.CompletedAt, &j.CreatedAt, &j.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -57,11 +57,22 @@ func (s *JobStore) ClaimNext(ctx context.Context, repoID uuid.UUID, phase string
 }
 
 func (s *JobStore) Complete(ctx context.Context, id uuid.UUID, tokensUsed int, costUSD float64) error {
+	return s.CompleteWithDetails(ctx, id, tokensUsed, costUSD, "", 1)
+}
+
+func (s *JobStore) CompleteWithDetails(ctx context.Context, id uuid.UUID, tokensUsed int, costUSD float64, modelUsed string, attemptCount int) error {
 	now := time.Now()
+	var modelPtr *string
+	if modelUsed != "" {
+		modelPtr = &modelUsed
+	}
+	if attemptCount < 1 {
+		attemptCount = 1
+	}
 	_, err := s.Pool.Exec(ctx,
-		`UPDATE extraction_jobs SET status = 'completed', tokens_used = $2, cost_usd = $3, completed_at = $4, updated_at = $4
+		`UPDATE extraction_jobs SET status = 'completed', tokens_used = $2, cost_usd = $3, model_used = $4, attempt_count = $5, completed_at = $6, updated_at = $6
 		 WHERE id = $1`,
-		id, tokensUsed, costUSD, now,
+		id, tokensUsed, costUSD, modelPtr, attemptCount, now,
 	)
 	if err != nil {
 		return fmt.Errorf("completing job: %w", err)
@@ -123,7 +134,7 @@ func (s *JobStore) CountByStatus(ctx context.Context, repoID uuid.UUID, phase st
 
 func (s *JobStore) ListFailed(ctx context.Context, repoID uuid.UUID) ([]ExtractionJob, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, repo_id, phase, target, content_hash, status, error_message, tokens_used, cost_usd, started_at, completed_at, created_at, updated_at
+		`SELECT id, repo_id, phase, target, content_hash, status, error_message, tokens_used, cost_usd, model_used, attempt_count, started_at, completed_at, created_at, updated_at
 		 FROM extraction_jobs WHERE repo_id = $1 AND status = 'failed' ORDER BY phase, target`, repoID,
 	)
 	if err != nil {
@@ -134,7 +145,7 @@ func (s *JobStore) ListFailed(ctx context.Context, repoID uuid.UUID) ([]Extracti
 	var jobs []ExtractionJob
 	for rows.Next() {
 		var j ExtractionJob
-		if err := rows.Scan(&j.ID, &j.RepoID, &j.Phase, &j.Target, &j.ContentHash, &j.Status, &j.ErrorMessage, &j.TokensUsed, &j.CostUSD, &j.StartedAt, &j.CompletedAt, &j.CreatedAt, &j.UpdatedAt); err != nil {
+		if err := rows.Scan(&j.ID, &j.RepoID, &j.Phase, &j.Target, &j.ContentHash, &j.Status, &j.ErrorMessage, &j.TokensUsed, &j.CostUSD, &j.ModelUsed, &j.AttemptCount, &j.StartedAt, &j.CompletedAt, &j.CreatedAt, &j.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning job: %w", err)
 		}
 		jobs = append(jobs, j)
@@ -145,10 +156,10 @@ func (s *JobStore) ListFailed(ctx context.Context, repoID uuid.UUID) ([]Extracti
 func (s *JobStore) GetByTarget(ctx context.Context, repoID uuid.UUID, phase, target string) (*ExtractionJob, error) {
 	j := &ExtractionJob{}
 	err := s.Pool.QueryRow(ctx,
-		`SELECT id, repo_id, phase, target, content_hash, status, error_message, tokens_used, cost_usd, started_at, completed_at, created_at, updated_at
+		`SELECT id, repo_id, phase, target, content_hash, status, error_message, tokens_used, cost_usd, model_used, attempt_count, started_at, completed_at, created_at, updated_at
 		 FROM extraction_jobs WHERE repo_id = $1 AND phase = $2 AND target = $3`,
 		repoID, phase, target,
-	).Scan(&j.ID, &j.RepoID, &j.Phase, &j.Target, &j.ContentHash, &j.Status, &j.ErrorMessage, &j.TokensUsed, &j.CostUSD, &j.StartedAt, &j.CompletedAt, &j.CreatedAt, &j.UpdatedAt)
+	).Scan(&j.ID, &j.RepoID, &j.Phase, &j.Target, &j.ContentHash, &j.Status, &j.ErrorMessage, &j.TokensUsed, &j.CostUSD, &j.ModelUsed, &j.AttemptCount, &j.StartedAt, &j.CompletedAt, &j.CreatedAt, &j.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
