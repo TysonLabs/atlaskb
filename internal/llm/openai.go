@@ -153,6 +153,9 @@ func (c *OpenAIClient) Complete(ctx context.Context, model string, system string
 	if err != nil {
 		return nil, fmt.Errorf("LLM API call failed after %d retries: %w", c.maxRetries, err)
 	}
+	if resp == nil {
+		return nil, fmt.Errorf("LLM API call failed after %d retries: no response", c.maxRetries)
+	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
