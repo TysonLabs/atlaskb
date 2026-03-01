@@ -6,6 +6,7 @@ import { RepoDetail } from "./components/repos/RepoDetail";
 import { EntityExplorerPage } from "./components/entities/EntityExplorerPage";
 import { EntityDetailPage } from "./components/entities/EntityDetail";
 import { AskPage } from "./components/ask/AskPage";
+import { IndexingPage } from "./components/indexing/IndexingPage";
 import { GraphPage } from "./components/graph/GraphPage";
 
 export default function App() {
@@ -16,6 +17,7 @@ export default function App() {
           <Route path="/" element={<DashboardPage />} />
           <Route path="/repos" element={<ReposPage />} />
           <Route path="/repos/:id" element={<RepoDetail />} />
+          <Route path="/indexing" element={<IndexingPage />} />
           <Route path="/entities" element={<EntityExplorerPage />} />
           <Route path="/entities/:id" element={<EntityDetailPage />} />
           <Route path="/ask" element={<AskPage />} />

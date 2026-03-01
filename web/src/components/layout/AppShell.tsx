@@ -5,11 +5,13 @@ import {
   Boxes,
   MessageSquare,
   Network,
+  Workflow,
 } from "lucide-react";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/repos", icon: FolderGit2, label: "Repos" },
+  { to: "/indexing", icon: Workflow, label: "Indexing" },
   { to: "/entities", icon: Boxes, label: "Entities" },
   { to: "/ask", icon: MessageSquare, label: "Ask" },
   { to: "/graph", icon: Network, label: "Graph" },

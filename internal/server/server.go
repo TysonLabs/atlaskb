@@ -65,6 +65,18 @@ func (s *Server) buildRouter() chi.Router {
 
 		r.Get("/graph/repo/{id}", s.handleRepoGraph)
 		r.Get("/graph/entity/{id}", s.handleEntityGraph)
+		r.Get("/graph/multi", s.handleMultiRepoGraph)
+
+		r.Get("/cross-repo/links", s.handleListCrossRepoLinks)
+		r.Get("/cross-repo/links/{id}", s.handleGetCrossRepoLink)
+		r.Post("/cross-repo/links", s.handleCreateCrossRepoLink)
+		r.Delete("/cross-repo/links/{id}", s.handleDeleteCrossRepoLink)
+
+		r.Post("/indexing/batch", s.handleBatchReindex)
+		r.Get("/indexing/batch/status", s.handleBatchStatus)
+		r.Post("/indexing/batch/cancel", s.handleBatchCancel)
+		r.Get("/indexing/jobs", s.handleListIndexingJobs)
+		r.Get("/indexing/history", s.handleIndexingHistory)
 
 		r.Post("/ask", s.handleAsk)
 		r.Get("/search", s.handleSearch)

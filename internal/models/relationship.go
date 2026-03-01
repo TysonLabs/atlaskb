@@ -188,6 +188,83 @@ func (s *RelationshipStore) CreateCrossRepo(ctx context.Context, cr *CrossRepoRe
 	return nil
 }
 
+// UpsertCrossRepo creates or updates a cross-repo relationship using the unique index.
+func (s *RelationshipStore) UpsertCrossRepo(ctx context.Context, cr *CrossRepoRelationship) error {
+	cr.CreatedAt = time.Now()
+
+	provJSON, err := json.Marshal(cr.Provenance)
+	if err != nil {
+		return fmt.Errorf("marshaling provenance: %w", err)
+	}
+
+	err = s.Pool.QueryRow(ctx,
+		`INSERT INTO cross_repo_relationships (id, from_entity_id, to_entity_id, from_repo_id, to_repo_id, kind, description, strength, provenance, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		 ON CONFLICT (from_entity_id, to_entity_id, kind) DO UPDATE SET
+		   provenance = EXCLUDED.provenance,
+		   strength = EXCLUDED.strength,
+		   description = COALESCE(EXCLUDED.description, cross_repo_relationships.description)
+		 RETURNING id`,
+		uuid.New(), cr.FromEntityID, cr.ToEntityID, cr.FromRepoID, cr.ToRepoID, cr.Kind, cr.Description, cr.Strength, provJSON, cr.CreatedAt,
+	).Scan(&cr.ID)
+	if err != nil {
+		return fmt.Errorf("upserting cross-repo relationship: %w", err)
+	}
+	return nil
+}
+
+// ListAllCrossRepo returns all cross-repo relationships.
+func (s *RelationshipStore) ListAllCrossRepo(ctx context.Context) ([]CrossRepoRelationship, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT id, from_entity_id, to_entity_id, from_repo_id, to_repo_id, kind, description, strength, provenance, created_at
+		 FROM cross_repo_relationships ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing all cross-repo relationships: %w", err)
+	}
+	defer rows.Close()
+
+	var rels []CrossRepoRelationship
+	for rows.Next() {
+		var r CrossRepoRelationship
+		var provJSON []byte
+		if err := rows.Scan(&r.ID, &r.FromEntityID, &r.ToEntityID, &r.FromRepoID, &r.ToRepoID, &r.Kind, &r.Description, &r.Strength, &provJSON, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scanning cross-repo relationship: %w", err)
+		}
+		if err := json.Unmarshal(provJSON, &r.Provenance); err != nil {
+			return nil, fmt.Errorf("unmarshaling provenance: %w", err)
+		}
+		rels = append(rels, r)
+	}
+	return rels, nil
+}
+
+// GetCrossRepoByID returns a single cross-repo relationship by ID.
+func (s *RelationshipStore) GetCrossRepoByID(ctx context.Context, id uuid.UUID) (*CrossRepoRelationship, error) {
+	var r CrossRepoRelationship
+	var provJSON []byte
+	err := s.Pool.QueryRow(ctx,
+		`SELECT id, from_entity_id, to_entity_id, from_repo_id, to_repo_id, kind, description, strength, provenance, created_at
+		 FROM cross_repo_relationships WHERE id = $1`, id,
+	).Scan(&r.ID, &r.FromEntityID, &r.ToEntityID, &r.FromRepoID, &r.ToRepoID, &r.Kind, &r.Description, &r.Strength, &provJSON, &r.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("getting cross-repo relationship: %w", err)
+	}
+	if err := json.Unmarshal(provJSON, &r.Provenance); err != nil {
+		return nil, fmt.Errorf("unmarshaling provenance: %w", err)
+	}
+	return &r, nil
+}
+
+// DeleteCrossRepo deletes a cross-repo relationship by ID.
+func (s *RelationshipStore) DeleteCrossRepo(ctx context.Context, id uuid.UUID) error {
+	_, err := s.Pool.Exec(ctx, `DELETE FROM cross_repo_relationships WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("deleting cross-repo relationship: %w", err)
+	}
+	return nil
+}
+
 // ListCrossRepoByEntity returns all cross-repo relationships involving an entity.
 func (s *RelationshipStore) ListCrossRepoByEntity(ctx context.Context, entityID uuid.UUID) ([]CrossRepoRelationship, error) {
 	rows, err := s.Pool.Query(ctx,

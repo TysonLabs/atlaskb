@@ -11,10 +11,12 @@ import (
 )
 
 type graphNode struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Kind string `json:"kind"`
-	Path string `json:"path,omitempty"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Path     string `json:"path,omitempty"`
+	RepoID   string `json:"repoId,omitempty"`
+	RepoName string `json:"repoName,omitempty"`
 }
 
 type graphEdge struct {
@@ -24,6 +26,7 @@ type graphEdge struct {
 	Kind        string `json:"kind"`
 	Strength    string `json:"strength"`
 	Description string `json:"description,omitempty"`
+	CrossRepo   bool   `json:"crossRepo,omitempty"`
 }
 
 type graphResponse struct {
@@ -115,6 +118,55 @@ func (s *Server) handleRepoGraph(w http.ResponseWriter, r *http.Request) {
 			edge.Description = *rel.Description
 		}
 		resp.Edges = append(resp.Edges, edge)
+	}
+
+	// Optionally include cross-repo edges
+	if r.URL.Query().Get("include_cross_repo") == "true" {
+		crossRels, err := relStore.ListCrossRepoByRepo(r.Context(), id)
+		if err == nil {
+			repoStore := &models.RepoStore{Pool: s.pool}
+			for _, cr := range crossRels {
+				edge := graphEdge{
+					ID:        cr.ID.String(),
+					Source:    cr.FromEntityID.String(),
+					Target:    cr.ToEntityID.String(),
+					Kind:      cr.Kind,
+					Strength:  cr.Strength,
+					CrossRepo: true,
+				}
+				if cr.Description != nil {
+					edge.Description = *cr.Description
+				}
+				resp.Edges = append(resp.Edges, edge)
+
+				// Add external entity nodes if not already present
+				for _, eid := range []uuid.UUID{cr.FromEntityID, cr.ToEntityID} {
+					if connectedIDs[eid] {
+						continue
+					}
+					connectedIDs[eid] = true
+					ext, err := entityStore.GetByID(r.Context(), eid)
+					if err != nil || ext == nil {
+						continue
+					}
+					node := graphNode{
+						ID:     ext.ID.String(),
+						Name:   ext.Name,
+						Kind:   ext.Kind,
+						RepoID: ext.RepoID.String(),
+					}
+					if ext.Path != nil {
+						node.Path = *ext.Path
+					}
+					// Resolve repo name
+					repo, _ := repoStore.GetByID(r.Context(), ext.RepoID)
+					if repo != nil {
+						node.RepoName = repo.Name
+					}
+					resp.Nodes = append(resp.Nodes, node)
+				}
+			}
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -248,4 +300,146 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+func (s *Server) handleMultiRepoGraph(w http.ResponseWriter, r *http.Request) {
+	repoIDsParam := r.URL.Query().Get("repo_ids")
+	if repoIDsParam == "" {
+		writeError(w, NewBadRequest("repo_ids is required"))
+		return
+	}
+
+	idStrs := parseCommaSeparated(repoIDsParam)
+	var repoIDs []uuid.UUID
+	for _, idStr := range idStrs {
+		id, err := uuid.Parse(idStr)
+		if err != nil {
+			writeError(w, NewBadRequest("invalid repo_id: "+idStr))
+			return
+		}
+		repoIDs = append(repoIDs, id)
+	}
+
+	entityStore := &models.EntityStore{Pool: s.pool}
+	relStore := &models.RelationshipStore{Pool: s.pool}
+	repoStore := &models.RepoStore{Pool: s.pool}
+
+	// Build repo name lookup
+	repoNames := make(map[uuid.UUID]string)
+	repoIDSet := make(map[uuid.UUID]bool)
+	for _, rid := range repoIDs {
+		repoIDSet[rid] = true
+		repo, err := repoStore.GetByID(r.Context(), rid)
+		if err == nil && repo != nil {
+			repoNames[rid] = repo.Name
+		}
+	}
+
+	resp := graphResponse{
+		Nodes: make([]graphNode, 0),
+		Edges: make([]graphEdge, 0),
+	}
+
+	allEntityIDs := make(map[uuid.UUID]bool)
+	entityMap := make(map[uuid.UUID]models.Entity)
+
+	// Collect entities and intra-repo edges for each repo
+	for _, rid := range repoIDs {
+		entities, err := entityStore.ListByRepo(r.Context(), rid)
+		if err != nil {
+			continue
+		}
+		for _, e := range entities {
+			entityMap[e.ID] = e
+			allEntityIDs[e.ID] = true
+		}
+
+		rels, err := relStore.ListByRepo(r.Context(), rid)
+		if err != nil {
+			continue
+		}
+		for _, rel := range rels {
+			if !allEntityIDs[rel.FromEntityID] || !allEntityIDs[rel.ToEntityID] {
+				continue
+			}
+			edge := graphEdge{
+				ID:       rel.ID.String(),
+				Source:   rel.FromEntityID.String(),
+				Target:   rel.ToEntityID.String(),
+				Kind:     rel.Kind,
+				Strength: rel.Strength,
+			}
+			if rel.Description != nil {
+				edge.Description = *rel.Description
+			}
+			resp.Edges = append(resp.Edges, edge)
+		}
+	}
+
+	// Add cross-repo edges between selected repos
+	for _, rid := range repoIDs {
+		crossRels, err := relStore.ListCrossRepoByRepo(r.Context(), rid)
+		if err != nil {
+			continue
+		}
+		for _, cr := range crossRels {
+			// Only include if both repos are in the selected set
+			if !repoIDSet[cr.FromRepoID] || !repoIDSet[cr.ToRepoID] {
+				continue
+			}
+			edge := graphEdge{
+				ID:        cr.ID.String(),
+				Source:    cr.FromEntityID.String(),
+				Target:    cr.ToEntityID.String(),
+				Kind:      cr.Kind,
+				Strength:  cr.Strength,
+				CrossRepo: true,
+			}
+			if cr.Description != nil {
+				edge.Description = *cr.Description
+			}
+			resp.Edges = append(resp.Edges, edge)
+			allEntityIDs[cr.FromEntityID] = true
+			allEntityIDs[cr.ToEntityID] = true
+
+			// Ensure external entities are in the map
+			for _, eid := range []uuid.UUID{cr.FromEntityID, cr.ToEntityID} {
+				if _, ok := entityMap[eid]; !ok {
+					ext, err := entityStore.GetByID(r.Context(), eid)
+					if err == nil && ext != nil {
+						entityMap[eid] = *ext
+					}
+				}
+			}
+		}
+	}
+
+	// Build connected node set
+	connectedIDs := make(map[uuid.UUID]bool)
+	for _, edge := range resp.Edges {
+		srcID, _ := uuid.Parse(edge.Source)
+		tgtID, _ := uuid.Parse(edge.Target)
+		connectedIDs[srcID] = true
+		connectedIDs[tgtID] = true
+	}
+
+	for eid := range connectedIDs {
+		e, ok := entityMap[eid]
+		if !ok {
+			continue
+		}
+		node := graphNode{
+			ID:       e.ID.String(),
+			Name:     e.Name,
+			Kind:     e.Kind,
+			RepoID:   e.RepoID.String(),
+			RepoName: repoNames[e.RepoID],
+		}
+		if e.Path != nil {
+			node.Path = *e.Path
+		}
+		resp.Nodes = append(resp.Nodes, node)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }

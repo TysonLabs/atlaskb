@@ -1,19 +1,23 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/tgeorge06/atlaskb/internal/models"
 	"github.com/tgeorge06/atlaskb/internal/query"
 )
 
 type askRequest struct {
-	Question string `json:"question"`
-	RepoID   string `json:"repo_id,omitempty"`
-	TopK     int    `json:"top_k,omitempty"`
+	Question string   `json:"question"`
+	RepoID   string   `json:"repo_id,omitempty"`
+	RepoIDs  []string `json:"repo_ids,omitempty"`
+	RepoName string   `json:"repo_name,omitempty"`
+	TopK     int      `json:"top_k,omitempty"`
 }
 
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
@@ -30,14 +34,10 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		req.TopK = 40
 	}
 
-	var repoIDs []uuid.UUID
-	if req.RepoID != "" {
-		id, err := uuid.Parse(req.RepoID)
-		if err != nil {
-			writeError(w, NewBadRequest("invalid repo_id"))
-			return
-		}
-		repoIDs = []uuid.UUID{id}
+	repoIDs, err := s.resolveRepoIDs(r.Context(), req.RepoID, req.RepoIDs, req.RepoName)
+	if err != nil {
+		writeError(w, NewBadRequest(err.Error()))
+		return
 	}
 
 	engine := query.NewEngine(s.pool, s.embedder)
@@ -103,14 +103,15 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var repoIDs []uuid.UUID
-	if rid := r.URL.Query().Get("repo_id"); rid != "" {
-		id, err := uuid.Parse(rid)
-		if err != nil {
-			writeError(w, NewBadRequest("invalid repo_id"))
-			return
-		}
-		repoIDs = []uuid.UUID{id}
+	// Parse repo_ids (comma-separated), repo_id (single), and repo_name
+	var rawRepoIDs []string
+	if rids := r.URL.Query().Get("repo_ids"); rids != "" {
+		rawRepoIDs = strings.Split(rids, ",")
+	}
+	repoIDs, err := s.resolveRepoIDs(r.Context(), r.URL.Query().Get("repo_id"), rawRepoIDs, r.URL.Query().Get("repo_name"))
+	if err != nil {
+		writeError(w, NewBadRequest(err.Error()))
+		return
 	}
 
 	limit := 20
@@ -128,4 +129,54 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		results = []query.SearchResult{}
 	}
 	writeJSON(w, http.StatusOK, results)
+}
+
+// resolveRepoIDs merges repo_id, repo_ids, and repo_name into a deduplicated []uuid.UUID.
+func (s *Server) resolveRepoIDs(ctx context.Context, repoID string, repoIDs []string, repoName string) ([]uuid.UUID, error) {
+	seen := make(map[uuid.UUID]bool)
+	var result []uuid.UUID
+
+	// Single repo_id
+	if repoID != "" {
+		id, err := uuid.Parse(repoID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid repo_id: %s", repoID)
+		}
+		seen[id] = true
+		result = append(result, id)
+	}
+
+	// Multiple repo_ids
+	for _, rid := range repoIDs {
+		rid = strings.TrimSpace(rid)
+		if rid == "" {
+			continue
+		}
+		id, err := uuid.Parse(rid)
+		if err != nil {
+			return nil, fmt.Errorf("invalid repo_id in repo_ids: %s", rid)
+		}
+		if !seen[id] {
+			seen[id] = true
+			result = append(result, id)
+		}
+	}
+
+	// Resolve repo_name to ID
+	if repoName != "" {
+		repoStore := &models.RepoStore{Pool: s.pool}
+		repo, err := repoStore.GetByName(ctx, repoName)
+		if err != nil {
+			return nil, fmt.Errorf("looking up repo_name %q: %w", repoName, err)
+		}
+		if repo == nil {
+			return nil, fmt.Errorf("repo not found: %s", repoName)
+		}
+		if !seen[repo.ID] {
+			seen[repo.ID] = true
+			result = append(result, repo.ID)
+		}
+	}
+
+	return result, nil
 }

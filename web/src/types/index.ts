@@ -158,6 +158,8 @@ export interface GraphNode {
   name: string;
   kind: string;
   path?: string;
+  repoId?: string;
+  repoName?: string;
 }
 
 export interface GraphEdge {
@@ -167,6 +169,20 @@ export interface GraphEdge {
   kind: string;
   strength: string;
   description?: string;
+  crossRepo?: boolean;
+}
+
+export interface CrossRepoLink {
+  id: string;
+  from_entity_id: string;
+  to_entity_id: string;
+  from_repo_id: string;
+  to_repo_id: string;
+  kind: string;
+  strength: string;
+  description?: string;
+  provenance: Provenance[];
+  created_at: string;
 }
 
 export interface GraphData {
@@ -207,4 +223,30 @@ export interface ChatSessionSummary {
   message_count: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface BatchRepoStatus {
+  repo_id: string;
+  repo_name: string;
+  status: "pending" | "running" | "completed" | "failed";
+  logs: string[];
+}
+
+export interface BatchStatus {
+  active: boolean;
+  id: string;
+  total: number;
+  completed: number;
+  failed: number;
+  current_index: number;
+  force: boolean;
+  repos: BatchRepoStatus[];
+}
+
+export interface IndexingJobSummary {
+  repo_id: string;
+  repo_name: string;
+  status: string;
+  latest_log: string;
+  is_batch: boolean;
 }

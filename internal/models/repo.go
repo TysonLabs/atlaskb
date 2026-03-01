@@ -59,6 +59,15 @@ func (s *RepoStore) GetByID(ctx context.Context, id uuid.UUID) (*Repo, error) {
 	return r, nil
 }
 
+func (s *RepoStore) GetByName(ctx context.Context, name string) (*Repo, error) {
+	r, err := scanRepo(s.Pool.QueryRow(ctx,
+		`SELECT `+repoColumns+` FROM repos WHERE name = $1`, name))
+	if err != nil {
+		return nil, fmt.Errorf("querying repo by name: %w", err)
+	}
+	return r, nil
+}
+
 func (s *RepoStore) GetByPath(ctx context.Context, path string) (*Repo, error) {
 	r, err := scanRepo(s.Pool.QueryRow(ctx,
 		`SELECT `+repoColumns+` FROM repos WHERE local_path = $1`, path))

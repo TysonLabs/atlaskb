@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 import type { RepoListItem } from "../../types";
-import { FolderGit2, Plus, X } from "lucide-react";
+import { FolderGit2, Plus, X, Search, RefreshCw } from "lucide-react";
 
 export function ReposPage() {
   const [repos, setRepos] = useState<RepoListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [filter, setFilter] = useState("");
+  const navigate = useNavigate();
 
   const loadRepos = () => {
     setLoading(true);
@@ -16,18 +18,41 @@ export function ReposPage() {
 
   useEffect(() => { loadRepos(); }, []);
 
+  const handleReindexAll = async () => {
+    try {
+      await api.batchReindexAll(true);
+      navigate("/indexing");
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
   if (loading) return <p className="text-foreground-secondary">Loading repos...</p>;
+
+  const filtered = filter
+    ? repos.filter((r) => r.name.toLowerCase().includes(filter.toLowerCase()))
+    : repos;
 
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-foreground">Repositories</h1>
-        <button
-          onClick={() => setShowForm(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-accent text-surface text-sm font-medium rounded-md hover:bg-accent-hover transition-colors"
-        >
-          <Plus size={16} /> Register Repo
-        </button>
+        <div className="flex items-center gap-2">
+          {repos.length > 0 && (
+            <button
+              onClick={handleReindexAll}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-syn-green/15 text-syn-green text-sm font-medium rounded-md hover:bg-syn-green/25 transition-colors"
+            >
+              <RefreshCw size={16} /> Re-index All
+            </button>
+          )}
+          <button
+            onClick={() => setShowForm(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-accent text-surface text-sm font-medium rounded-md hover:bg-accent-hover transition-colors"
+          >
+            <Plus size={16} /> Register Repo
+          </button>
+        </div>
       </div>
 
       {showForm && (
@@ -37,11 +62,25 @@ export function ReposPage() {
         />
       )}
 
+      {repos.length > 0 && (
+        <div className="relative mb-4">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-foreground-muted" />
+          <input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter repositories..."
+            className="w-full pl-9 pr-3 py-2 border border-edge rounded-lg text-sm bg-surface text-foreground placeholder-foreground-muted focus:outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+      )}
+
       {repos.length === 0 ? (
         <p className="text-foreground-secondary">No repositories indexed yet.</p>
+      ) : filtered.length === 0 ? (
+        <p className="text-foreground-secondary">No repos match "{filter}".</p>
       ) : (
         <div className="grid gap-4">
-          {repos.map((repo) => (
+          {filtered.map((repo) => (
             <Link
               key={repo.id}
               to={`/repos/${repo.id}`}

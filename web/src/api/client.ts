@@ -13,6 +13,9 @@ import type {
   SearchResult,
   ChatSession,
   ChatSessionSummary,
+  BatchStatus,
+  IndexingJobSummary,
+  CrossRepoLink,
 } from "../types";
 
 const BASE = "/api";
@@ -156,6 +159,16 @@ export const api = {
     }
   },
 
+  // Batch / indexing
+  batchReindexAll: (force?: boolean) =>
+    post<{ status: string; batch_id: string; message: string }>("/indexing/batch", { all: true, force: force || false }),
+  batchReindex: (repoIds: string[], force?: boolean) =>
+    post<{ status: string; batch_id: string; message: string }>("/indexing/batch", { repo_ids: repoIds, force: force || false }),
+  getBatchStatus: () => get<BatchStatus>("/indexing/batch/status"),
+  cancelBatch: () => post<{ status: string }>("/indexing/batch/cancel", {}),
+  getIndexingJobs: () => get<IndexingJobSummary[]>("/indexing/jobs"),
+  getIndexingHistory: () => get<IndexingRun[]>("/indexing/history"),
+
   // Chat sessions
   listChats: () => get<ChatSessionSummary[]>("/chats"),
   createChat: () => post<ChatSession>("/chats", {}),
@@ -163,6 +176,25 @@ export const api = {
   updateChat: (id: string, data: { title: string }) =>
     put<ChatSession>(`/chats/${id}`, data),
   deleteChat: (id: string) => del<{ status: string }>(`/chats/${id}`),
+
+  // Cross-repo links
+  getCrossRepoLinks: (repoId?: string) => {
+    const sp = new URLSearchParams();
+    if (repoId) sp.set("repo_id", repoId);
+    return get<CrossRepoLink[]>(`/cross-repo/links?${sp}`);
+  },
+  createCrossRepoLink: (data: {
+    from_entity_id: string;
+    to_entity_id: string;
+    kind: string;
+    strength?: string;
+    description?: string;
+  }) => post<CrossRepoLink>("/cross-repo/links", data),
+  deleteCrossRepoLink: (id: string) => del<{ status: string }>(`/cross-repo/links/${id}`),
+
+  // Multi-repo graph
+  getMultiRepoGraph: (repoIds: string[]) =>
+    get<GraphData>(`/graph/multi?repo_ids=${repoIds.join(",")}`),
 
   chatMessage: async function* (
     chatId: string,

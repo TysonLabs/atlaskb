@@ -291,6 +291,13 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 
 			log.Printf("[deps] parsed %d dependencies (%d direct, %d dev/indirect) from manifest files",
 				len(deps), directCount, indirectCount)
+
+			// Auto-discover cross-repo links by matching deps against indexed repos
+			crossCreated, crossSkipped := DiscoverCrossRepoLinks(ctx, cfg.Pool, repo.ID, repoName, deps)
+			if crossCreated > 0 || crossSkipped > 0 {
+				log.Printf("[cross-repo] discovered %d cross-repo links (%d skipped)", crossCreated, crossSkipped)
+				cfg.progress(fmt.Sprintf("Cross-repo: discovered %d links", crossCreated))
+			}
 		}
 	}
 
