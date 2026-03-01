@@ -92,6 +92,32 @@ func (s *FactStore) ListByEntity(ctx context.Context, entityID uuid.UUID) ([]Fac
 	return facts, nil
 }
 
+// ListByEntityLimited returns up to `limit` active facts for an entity.
+func (s *FactStore) ListByEntityLimited(ctx context.Context, entityID uuid.UUID, limit int) ([]Fact, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT id, entity_id, repo_id, claim, dimension, category, confidence, provenance, superseded_by, created_at, updated_at
+		 FROM facts WHERE entity_id = $1 AND superseded_by IS NULL ORDER BY dimension, category LIMIT $2`, entityID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing facts: %w", err)
+	}
+	defer rows.Close()
+
+	var facts []Fact
+	for rows.Next() {
+		var f Fact
+		var provJSON []byte
+		if err := rows.Scan(&f.ID, &f.EntityID, &f.RepoID, &f.Claim, &f.Dimension, &f.Category, &f.Confidence, &provJSON, &f.SupersededBy, &f.CreatedAt, &f.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning fact: %w", err)
+		}
+		if err := json.Unmarshal(provJSON, &f.Provenance); err != nil {
+			return nil, fmt.Errorf("unmarshaling provenance: %w", err)
+		}
+		facts = append(facts, f)
+	}
+	return facts, nil
+}
+
 func (s *FactStore) ListByRepoWithoutEmbedding(ctx context.Context, repoID uuid.UUID) ([]Fact, error) {
 	rows, err := s.Pool.Query(ctx,
 		`SELECT id, entity_id, repo_id, claim, dimension, category, confidence, provenance, superseded_by, created_at, updated_at
@@ -239,6 +265,63 @@ func (s *FactStore) ListByRepoAndCategory(ctx context.Context, repoID uuid.UUID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("listing facts by category: %w", err)
+	}
+	defer rows.Close()
+
+	var facts []Fact
+	for rows.Next() {
+		var f Fact
+		var provJSON []byte
+		if err := rows.Scan(&f.ID, &f.EntityID, &f.RepoID, &f.Claim, &f.Dimension, &f.Category, &f.Confidence, &provJSON, &f.SupersededBy, &f.CreatedAt, &f.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning fact: %w", err)
+		}
+		if err := json.Unmarshal(provJSON, &f.Provenance); err != nil {
+			return nil, fmt.Errorf("unmarshaling provenance: %w", err)
+		}
+		facts = append(facts, f)
+	}
+	return facts, nil
+}
+
+// MaxSimilarityByEntity returns the maximum cosine similarity score between the given
+// query vector and facts for each entity ID. Used for triplet-ranked search scoring.
+func (s *FactStore) MaxSimilarityByEntity(ctx context.Context, queryVec pgvector.Vector, entityIDs []uuid.UUID) (map[uuid.UUID]float64, error) {
+	if len(entityIDs) == 0 {
+		return make(map[uuid.UUID]float64), nil
+	}
+	rows, err := s.Pool.Query(ctx,
+		`SELECT entity_id, MAX(1 - (embedding <=> $1)) AS score
+		 FROM facts
+		 WHERE entity_id = ANY($2) AND embedding IS NOT NULL AND superseded_by IS NULL
+		 GROUP BY entity_id`, queryVec, entityIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("computing max similarity by entity: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[uuid.UUID]float64, len(entityIDs))
+	for rows.Next() {
+		var eid uuid.UUID
+		var score float64
+		if err := rows.Scan(&eid, &score); err != nil {
+			return nil, fmt.Errorf("scanning similarity score: %w", err)
+		}
+		result[eid] = score
+	}
+	return result, nil
+}
+
+// ListByRepoAndCategoryAllRepos returns convention/pattern facts across all repos.
+func (s *FactStore) ListByRepoAndCategoryAllRepos(ctx context.Context, categories []string, limit int) ([]Fact, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT id, entity_id, repo_id, claim, dimension, category, confidence, provenance, superseded_by, created_at, updated_at
+		 FROM facts WHERE category = ANY($1)
+		 AND superseded_by IS NULL AND confidence != 'low'
+		 ORDER BY dimension LIMIT $2`, categories, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing facts by category (all repos): %w", err)
 	}
 	defer rows.Close()
 

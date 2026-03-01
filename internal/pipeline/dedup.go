@@ -138,3 +138,39 @@ func parseDedupDecision(raw string) (*DedupDecision, error) {
 
 	return &decision, nil
 }
+
+// FastFuzzyMatch checks if a candidate entity can be deduplicated against existing
+// entities using normalized name matching, without requiring an LLM call.
+// Returns the matched entity ID and true if a match is found.
+func FastFuzzyMatch(ctx context.Context, entityStore *models.EntityStore, repoID uuid.UUID, candidate ExtractedEntity) (uuid.UUID, bool) {
+	candidateNorm := models.NormalizeName(candidate.Name)
+
+	// Find entities with high similarity normalized name match + same kind
+	results, err := entityStore.SearchFuzzy(ctx, candidate.Name, &repoID, 0.95, 5)
+	if err != nil || len(results) == 0 {
+		return uuid.Nil, false
+	}
+
+	candidateOwner := qualifiedNameOwner(candidate.QualifiedName)
+
+	for _, r := range results {
+		// Must be the same kind
+		if r.Kind != candidate.Kind {
+			continue
+		}
+
+		// Must have exact normalized name match (not just high similarity)
+		if models.NormalizeName(r.Name) != candidateNorm {
+			continue
+		}
+
+		// Must have the same owner (type prefix / package scope)
+		if qualifiedNameOwner(r.QualifiedName) != candidateOwner {
+			continue
+		}
+
+		return r.ID, true
+	}
+
+	return uuid.Nil, false
+}

@@ -188,6 +188,35 @@ type ExtractionJob struct {
 	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
+// Subgraph represents a neighborhood of entities and relationships around a seed entity.
+type Subgraph struct {
+	SeedEntityID  uuid.UUID
+	Entities      map[uuid.UUID]Entity
+	Relationships []Relationship
+	Facts         map[uuid.UUID][]Fact // entity_id -> facts
+	Depths        map[uuid.UUID]int    // entity_id -> hop distance from seed
+}
+
+// TraversalOptions configures N-hop graph traversal.
+type TraversalOptions struct {
+	MaxHops        int      // default 3, max 5
+	RelKinds       []string // filter by relationship kinds (nil = all)
+	CrossRepo      bool     // follow relationships across repo boundaries
+	MaxEntities    int      // safety cap, default 200
+	IncludeFacts   bool     // fetch facts for discovered entities
+	FactsPerEntity int      // max facts per entity, default 10
+}
+
+// DefaultTraversalOptions returns sensible defaults for graph traversal.
+func DefaultTraversalOptions() TraversalOptions {
+	return TraversalOptions{
+		MaxHops:        3,
+		MaxEntities:    200,
+		IncludeFacts:   false,
+		FactsPerEntity: 10,
+	}
+}
+
 type IndexingRun struct {
 	ID               uuid.UUID  `json:"id"`
 	RepoID           uuid.UUID  `json:"repo_id"`

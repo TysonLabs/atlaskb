@@ -31,7 +31,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	gomcp.AddTool(srv, &gomcp.Tool{
 		Name:        "search_knowledge_base",
-		Description: "Search the AtlasKB knowledge graph for facts about an indexed codebase. Returns entities, claims, and metadata ranked by relevance.",
+		Description: "Search the AtlasKB knowledge graph. mode=facts (default) returns individual fact results. mode=graph returns triplet-ranked (source, relationship, target) subgraph results showing how entities relate.",
 	}, s.handleSearch)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
@@ -41,7 +41,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	gomcp.AddTool(srv, &gomcp.Tool{
 		Name:        "get_conventions",
-		Description: "Get coding conventions and patterns for a repository. Returns established conventions and recurring patterns extracted from the codebase.",
+		Description: "Get coding conventions and patterns. When repo is specified, returns conventions for that repo. When omitted, returns conventions across all repos, tagged with repo name and deduplicated.",
 	}, s.handleGetConventions)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
@@ -56,7 +56,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	gomcp.AddTool(srv, &gomcp.Tool{
 		Name:        "get_impact_analysis",
-		Description: "Analyze the dependency graph around a code entity. Shows what it depends on, what depends on it, and what tests cover it.",
+		Description: "Analyze the dependency graph around a code entity with N-hop traversal. Shows direct impacts, transitive dependency chains, and cross-repo effects. Use max_hops to control traversal depth (default 2, max 5).",
 	}, s.handleGetImpactAnalysis)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
@@ -129,13 +129,14 @@ func entityPath(e *models.Entity) string {
 type searchInput struct {
 	Query string `json:"query" jsonschema:"Natural language search query"`
 	Repo  string `json:"repo,omitempty" jsonschema:"Filter by repository name"`
+	Mode  string `json:"mode,omitempty" jsonschema:"Search mode: facts (default, individual fact ranking) or graph (triplet-ranked subgraph search)"`
 	Limit int    `json:"limit,omitempty" jsonschema:"Max results to return (default 20, max 50)"`
 }
 
 type listReposInput struct{}
 
 type getConventionsInput struct {
-	Repo       string `json:"repo" jsonschema:"Repository name (required)"`
+	Repo       string `json:"repo,omitempty" jsonschema:"Repository name (optional — omit to get conventions from all repos)"`
 	MaxResults int    `json:"max_results,omitempty" jsonschema:"Max results to return (default 50, max 200)"`
 }
 
@@ -153,9 +154,11 @@ type getServiceContractInput struct {
 }
 
 type getImpactAnalysisInput struct {
-	Repo       string `json:"repo" jsonschema:"Repository name (required)"`
-	Path       string `json:"path" jsonschema:"File path or qualified name of the entity (required)"`
-	MaxResults int    `json:"max_results,omitempty" jsonschema:"Max results to return (default 50, max 200)"`
+	Repo       string   `json:"repo" jsonschema:"Repository name (required)"`
+	Path       string   `json:"path" jsonschema:"File path or qualified name of the entity (required)"`
+	MaxHops    int      `json:"max_hops,omitempty" jsonschema:"Max traversal depth (default 2, max 5)"`
+	RelKinds   []string `json:"rel_kinds,omitempty" jsonschema:"Filter by relationship kinds (e.g. depends_on, calls)"`
+	MaxResults int      `json:"max_results,omitempty" jsonschema:"Max results to return (default 50, max 200)"`
 }
 
 type getDecisionContextInput struct {
@@ -184,6 +187,20 @@ type searchResultItem struct {
 	Score      float64 `json:"score"`
 }
 
+type tripletResultItem struct {
+	Source           string   `json:"source"`
+	SourceKind       string   `json:"source_kind"`
+	SourcePath       string   `json:"source_path,omitempty"`
+	RelationshipKind string   `json:"relationship_kind"`
+	RelDescription   string   `json:"rel_description,omitempty"`
+	Target           string   `json:"target"`
+	TargetKind       string   `json:"target_kind"`
+	TargetPath       string   `json:"target_path,omitempty"`
+	Score            float64  `json:"score"`
+	SourceFacts      []string `json:"source_facts,omitempty"`
+	TargetFacts      []string `json:"target_facts,omitempty"`
+}
+
 type repoItem struct {
 	Name          string     `json:"name"`
 	RemoteURL     *string    `json:"remote_url,omitempty"`
@@ -198,6 +215,7 @@ type conventionItem struct {
 	Entity     string `json:"entity"`
 	EntityKind string `json:"entity_kind"`
 	Path       string `json:"path,omitempty"`
+	Repo       string `json:"repo,omitempty"`
 }
 
 type entitySummary struct {
@@ -251,9 +269,22 @@ type impactItem struct {
 	RelationshipKind string `json:"relationship_kind"`
 }
 
+type transitivePathItem struct {
+	Path []pathNode `json:"path"`
+}
+
+type pathNode struct {
+	Name             string `json:"name"`
+	Kind             string `json:"kind"`
+	Path             string `json:"path,omitempty"`
+	RelationshipKind string `json:"relationship_kind,omitempty"`
+}
+
 type impactAnalysisResponse struct {
-	Entity  entitySummary `json:"entity"`
-	Impacts []impactItem  `json:"impacts"`
+	Entity          entitySummary        `json:"entity"`
+	DirectImpacts   []impactItem         `json:"direct_impacts"`
+	TransitivePaths []transitivePathItem `json:"transitive_paths,omitempty"`
+	AffectedRepos   []string             `json:"affected_repos,omitempty"`
 }
 
 type decisionItem struct {
@@ -321,6 +352,45 @@ func (s *Server) handleSearch(ctx context.Context, req *gomcp.CallToolRequest, a
 		}
 	}
 
+	// Graph mode: triplet-ranked search
+	if args.Mode == "graph" {
+		engine := query.NewEngine(s.pool, s.embedder)
+		triplets, err := engine.SearchTriplets(ctx, args.Query, repoIDs, query.TripletSearchOptions{
+			MaxTriplets:    limit,
+			IncludeFacts:   true,
+			FactsPerEntity: 3,
+		})
+		if err != nil {
+			return errorResult(fmt.Sprintf("graph search failed: %v", err)), nil, nil
+		}
+
+		items := make([]tripletResultItem, 0, len(triplets))
+		for _, t := range triplets {
+			item := tripletResultItem{
+				Source:           t.Source.Name,
+				SourceKind:       t.Source.Kind,
+				SourcePath:       entityPath(&t.Source),
+				RelationshipKind: t.Relationship.Kind,
+				Target:           t.Target.Name,
+				TargetKind:       t.Target.Kind,
+				TargetPath:       entityPath(&t.Target),
+				Score:            t.Score,
+			}
+			if t.Relationship.Description != nil {
+				item.RelDescription = *t.Relationship.Description
+			}
+			for _, f := range t.SourceFacts {
+				item.SourceFacts = append(item.SourceFacts, f.Claim)
+			}
+			for _, f := range t.TargetFacts {
+				item.TargetFacts = append(item.TargetFacts, f.Claim)
+			}
+			items = append(items, item)
+		}
+		return jsonResult(items), nil, nil
+	}
+
+	// Default: facts mode
 	engine := query.NewEngine(s.pool, s.embedder)
 	results, err := engine.Search(ctx, args.Query, repoIDs, limit)
 	if err != nil {
@@ -371,26 +441,47 @@ func (s *Server) handleListRepos(ctx context.Context, req *gomcp.CallToolRequest
 // ── New tool handlers ────────────────────────────────────────────────────────
 
 func (s *Server) handleGetConventions(ctx context.Context, req *gomcp.CallToolRequest, args getConventionsInput) (*gomcp.CallToolResult, any, error) {
-	if args.Repo == "" {
-		return errorResult("repo parameter is required"), nil, nil
-	}
-
-	repo, err := s.resolveRepo(ctx, args.Repo)
-	if err != nil {
-		return errorResult(err.Error()), nil, nil
-	}
-
 	limit := clampMaxResults(args.MaxResults, 50, 200)
-
 	factStore := &models.FactStore{Pool: s.pool}
-	facts, err := factStore.ListByRepoAndCategory(ctx, repo.ID, []string{models.CategoryConvention, models.CategoryPattern}, limit)
-	if err != nil {
-		return errorResult(fmt.Sprintf("listing conventions: %v", err)), nil, nil
+	entityStore := &models.EntityStore{Pool: s.pool}
+
+	var facts []models.Fact
+
+	if args.Repo != "" {
+		// Single-repo mode (original behavior)
+		repo, err := s.resolveRepo(ctx, args.Repo)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		facts, err = factStore.ListByRepoAndCategory(ctx, repo.ID, []string{models.CategoryConvention, models.CategoryPattern}, limit)
+		if err != nil {
+			return errorResult(fmt.Sprintf("listing conventions: %v", err)), nil, nil
+		}
+	} else {
+		// Org-wide mode: query across all repos
+		var err error
+		facts, err = factStore.ListByRepoAndCategoryAllRepos(ctx, []string{models.CategoryConvention, models.CategoryPattern}, limit*2)
+		if err != nil {
+			return errorResult(fmt.Sprintf("listing org-wide conventions: %v", err)), nil, nil
+		}
 	}
 
-	entityStore := &models.EntityStore{Pool: s.pool}
+	repoStore := &models.RepoStore{Pool: s.pool}
+	repoNameCache := make(map[uuid.UUID]string)
+
 	items := make([]conventionItem, 0, len(facts))
+	seen := make(map[string]bool) // deduplicate similar claims across repos
 	for _, f := range facts {
+		// Deduplicate: skip if we've seen a very similar claim
+		claimKey := models.NormalizeName(f.Claim)
+		if len(claimKey) > 80 {
+			claimKey = claimKey[:80]
+		}
+		if seen[claimKey] {
+			continue
+		}
+		seen[claimKey] = true
+
 		item := conventionItem{
 			Claim:      f.Claim,
 			Dimension:  f.Dimension,
@@ -402,7 +493,23 @@ func (s *Server) handleGetConventions(ctx context.Context, req *gomcp.CallToolRe
 			item.EntityKind = e.Kind
 			item.Path = entityPath(e)
 		}
+
+		// Tag with repo name in org-wide mode
+		if args.Repo == "" {
+			name, ok := repoNameCache[f.RepoID]
+			if !ok {
+				if r, err := repoStore.GetByID(ctx, f.RepoID); err == nil && r != nil {
+					name = r.Name
+				}
+				repoNameCache[f.RepoID] = name
+			}
+			item.Repo = name
+		}
+
 		items = append(items, item)
+		if len(items) >= limit {
+			break
+		}
 	}
 
 	return jsonResult(items), nil, nil
@@ -575,48 +682,180 @@ func (s *Server) handleGetImpactAnalysis(ctx context.Context, req *gomcp.CallToo
 		return errorResult(err.Error()), nil, nil
 	}
 
+	maxHops := args.MaxHops
+	if maxHops <= 0 {
+		maxHops = 2
+	}
+	if maxHops > 5 {
+		maxHops = 5
+	}
+
 	limit := clampMaxResults(args.MaxResults, 50, 200)
 
 	relStore := &models.RelationshipStore{Pool: s.pool}
-	rels, err := relStore.ListByEntity(ctx, entity.ID)
-	if err != nil {
-		return errorResult(fmt.Sprintf("listing relationships: %v", err)), nil, nil
+
+	// Use N-hop traversal
+	opts := models.TraversalOptions{
+		MaxHops:     maxHops,
+		RelKinds:    args.RelKinds,
+		MaxEntities: limit,
 	}
-	if len(rels) > limit {
-		rels = rels[:limit]
+	subgraph, err := relStore.TraverseFromEntity(ctx, entity.ID, opts)
+	if err != nil {
+		return errorResult(fmt.Sprintf("traversing graph: %v", err)), nil, nil
 	}
 
-	entityStore := &models.EntityStore{Pool: s.pool}
-	impacts := make([]impactItem, 0, len(rels))
-	for _, r := range rels {
+	// Build direct impacts (1-hop, backward compatible)
+	directImpacts := make([]impactItem, 0)
+	for _, r := range subgraph.Relationships {
+		if r.FromEntityID != entity.ID && r.ToEntityID != entity.ID {
+			continue // not a direct relationship
+		}
 		ii := impactItem{RelationshipKind: r.Kind}
 		if r.FromEntityID == entity.ID {
 			ii.Direction = "depends_on"
 			if r.Kind == models.RelTestedBy {
 				ii.Direction = "tested_by"
 			}
-			if other, err := entityStore.GetByID(ctx, r.ToEntityID); err == nil && other != nil {
+			if other, ok := subgraph.Entities[r.ToEntityID]; ok {
 				ii.Name = other.Name
 				ii.Kind = other.Kind
-				ii.Path = entityPath(other)
+				ii.Path = entityPath(&other)
 			}
 		} else {
 			ii.Direction = "depended_by"
-			if other, err := entityStore.GetByID(ctx, r.FromEntityID); err == nil && other != nil {
+			if other, ok := subgraph.Entities[r.FromEntityID]; ok {
 				ii.Name = other.Name
 				ii.Kind = other.Kind
-				ii.Path = entityPath(other)
+				ii.Path = entityPath(&other)
 			}
 		}
-		impacts = append(impacts, ii)
+		directImpacts = append(directImpacts, ii)
+	}
+
+	// Build transitive paths using BFS parent-pointer tracing
+	transitivePaths := buildTransitivePaths(entity.ID, subgraph)
+
+	// Collect affected repos
+	repoStore := &models.RepoStore{Pool: s.pool}
+	repoNameCache := make(map[uuid.UUID]string)
+	repoSet := make(map[string]bool)
+	for _, e := range subgraph.Entities {
+		if e.ID == entity.ID {
+			continue
+		}
+		name, ok := repoNameCache[e.RepoID]
+		if !ok {
+			if r, err := repoStore.GetByID(ctx, e.RepoID); err == nil && r != nil {
+				name = r.Name
+			}
+			repoNameCache[e.RepoID] = name
+		}
+		if name != "" && name != repo.Name {
+			repoSet[name] = true
+		}
+	}
+	var affectedRepos []string
+	for name := range repoSet {
+		affectedRepos = append(affectedRepos, name)
 	}
 
 	resp := impactAnalysisResponse{
-		Entity:  toEntitySummary(entity),
-		Impacts: impacts,
+		Entity:          toEntitySummary(entity),
+		DirectImpacts:   directImpacts,
+		TransitivePaths: transitivePaths,
+		AffectedRepos:   affectedRepos,
 	}
 
 	return jsonResult(resp), nil, nil
+}
+
+// buildTransitivePaths traces paths from the seed entity to all entities at depth > 1
+// using BFS parent-pointer reconstruction on the subgraph.
+func buildTransitivePaths(seedID uuid.UUID, sg *models.Subgraph) []transitivePathItem {
+	if sg == nil || len(sg.Relationships) == 0 {
+		return nil
+	}
+
+	// Build adjacency list from relationships
+	type edge struct {
+		neighbor uuid.UUID
+		relKind  string
+	}
+	adj := make(map[uuid.UUID][]edge)
+	for _, r := range sg.Relationships {
+		adj[r.FromEntityID] = append(adj[r.FromEntityID], edge{r.ToEntityID, r.Kind})
+		adj[r.ToEntityID] = append(adj[r.ToEntityID], edge{r.FromEntityID, r.Kind})
+	}
+
+	// BFS from seed to discover shortest paths
+	type bfsEntry struct {
+		id      uuid.UUID
+		parent  uuid.UUID
+		relKind string
+	}
+	visited := map[uuid.UUID]bool{seedID: true}
+	parent := make(map[uuid.UUID]bfsEntry) // child -> parent info
+	queue := []uuid.UUID{seedID}
+
+	for len(queue) > 0 {
+		curr := queue[0]
+		queue = queue[1:]
+		for _, e := range adj[curr] {
+			if !visited[e.neighbor] {
+				visited[e.neighbor] = true
+				parent[e.neighbor] = bfsEntry{id: e.neighbor, parent: curr, relKind: e.relKind}
+				queue = append(queue, e.neighbor)
+			}
+		}
+	}
+
+	// Reconstruct paths for entities at depth > 1
+	var paths []transitivePathItem
+	for eid, depth := range sg.Depths {
+		if depth <= 1 || eid == seedID {
+			continue
+		}
+
+		// Trace back from eid to seed
+		var reversePath []pathNode
+		curr := eid
+		for curr != seedID {
+			entry, ok := parent[curr]
+			if !ok {
+				break
+			}
+			if e, ok := sg.Entities[curr]; ok {
+				reversePath = append(reversePath, pathNode{
+					Name:             e.Name,
+					Kind:             e.Kind,
+					Path:             entityPath(&e),
+					RelationshipKind: entry.relKind,
+				})
+			}
+			curr = entry.parent
+		}
+
+		if len(reversePath) == 0 {
+			continue
+		}
+
+		// Add seed at the beginning, reverse the rest
+		seedEntity := sg.Entities[seedID]
+		nodes := make([]pathNode, 0, len(reversePath)+1)
+		nodes = append(nodes, pathNode{
+			Name: seedEntity.Name,
+			Kind: seedEntity.Kind,
+			Path: entityPath(&seedEntity),
+		})
+		for i := len(reversePath) - 1; i >= 0; i-- {
+			nodes = append(nodes, reversePath[i])
+		}
+
+		paths = append(paths, transitivePathItem{Path: nodes})
+	}
+
+	return paths
 }
 
 func (s *Server) handleGetDecisionContext(ctx context.Context, req *gomcp.CallToolRequest, args getDecisionContextInput) (*gomcp.CallToolResult, any, error) {

@@ -20,9 +20,9 @@ func (s *EntityStore) Create(ctx context.Context, e *Entity) error {
 	e.UpdatedAt = e.CreatedAt
 
 	_, err := s.Pool.Exec(ctx,
-		`INSERT INTO entities (id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		e.ID, e.RepoID, e.Kind, e.Name, e.QualifiedName, e.Path, e.Summary, e.Capabilities, e.Assumptions, e.CreatedAt, e.UpdatedAt,
+		`INSERT INTO entities (id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, name_normalized, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		e.ID, e.RepoID, e.Kind, e.Name, e.QualifiedName, e.Path, e.Summary, e.Capabilities, e.Assumptions, NormalizeName(e.Name), e.CreatedAt, e.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting entity: %w", err)
@@ -33,15 +33,16 @@ func (s *EntityStore) Create(ctx context.Context, e *Entity) error {
 func (s *EntityStore) Upsert(ctx context.Context, e *Entity) error {
 	now := time.Now()
 	err := s.Pool.QueryRow(ctx,
-		`INSERT INTO entities (id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		`INSERT INTO entities (id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, name_normalized, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		 ON CONFLICT (repo_id, qualified_name) DO UPDATE SET
 		   summary = COALESCE(EXCLUDED.summary, entities.summary),
 		   capabilities = EXCLUDED.capabilities,
 		   assumptions = EXCLUDED.assumptions,
+		   name_normalized = EXCLUDED.name_normalized,
 		   updated_at = EXCLUDED.updated_at
 		 RETURNING id`,
-		uuid.New(), e.RepoID, e.Kind, e.Name, e.QualifiedName, e.Path, e.Summary, e.Capabilities, e.Assumptions, now, now,
+		uuid.New(), e.RepoID, e.Kind, e.Name, e.QualifiedName, e.Path, e.Summary, e.Capabilities, e.Assumptions, NormalizeName(e.Name), now, now,
 	).Scan(&e.ID)
 	if err != nil {
 		return fmt.Errorf("upserting entity: %w", err)
@@ -117,6 +118,31 @@ func (s *EntityStore) GetByID(ctx context.Context, id uuid.UUID) (*Entity, error
 		return nil, fmt.Errorf("querying entity: %w", err)
 	}
 	return e, nil
+}
+
+// GetByIDs fetches multiple entities by their IDs in a single query.
+func (s *EntityStore) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]Entity, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := s.Pool.Query(ctx,
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		 FROM entities WHERE id = ANY($1)`, ids,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("fetching entities by IDs: %w", err)
+	}
+	defer rows.Close()
+
+	var entities []Entity
+	for rows.Next() {
+		var e Entity
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning entity: %w", err)
+		}
+		entities = append(entities, e)
+	}
+	return entities, nil
 }
 
 func (s *EntityStore) ListByRepo(ctx context.Context, repoID uuid.UUID) ([]Entity, error) {
@@ -372,6 +398,80 @@ func (s *EntityStore) SearchByName(ctx context.Context, repoID *uuid.UUID, query
 		entities = []Entity{}
 	}
 	return &EntitySearchResult{Items: entities, Total: total}, nil
+}
+
+// EntityWithSimilarity pairs an entity with a pg_trgm similarity score.
+type EntityWithSimilarity struct {
+	Entity
+	Similarity float64
+}
+
+// SearchFuzzy finds entities with names similar to the given name using pg_trgm.
+// If repoID is non-nil, results are scoped to that repo. threshold controls minimum
+// similarity (0.0 to 1.0, recommended 0.3+).
+func (s *EntityStore) SearchFuzzy(ctx context.Context, name string, repoID *uuid.UUID, threshold float64, limit int) ([]EntityWithSimilarity, error) {
+	if threshold <= 0 {
+		threshold = 0.3
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+
+	normalized := NormalizeName(name)
+
+	where := "WHERE similarity(name_normalized, $1) >= $2"
+	args := []any{normalized, threshold}
+	argIdx := 3
+
+	if repoID != nil {
+		where += fmt.Sprintf(" AND repo_id = $%d", argIdx)
+		args = append(args, *repoID)
+		argIdx++
+	}
+
+	query := fmt.Sprintf(
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at,
+		        similarity(name_normalized, $1) AS sim
+		 FROM entities %s
+		 ORDER BY sim DESC LIMIT $%d`, where, argIdx)
+	args = append(args, limit)
+
+	rows, err := s.Pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("fuzzy searching entities: %w", err)
+	}
+	defer rows.Close()
+
+	var results []EntityWithSimilarity
+	for rows.Next() {
+		var ews EntityWithSimilarity
+		if err := rows.Scan(&ews.ID, &ews.RepoID, &ews.Kind, &ews.Name, &ews.QualifiedName, &ews.Path,
+			&ews.Summary, &ews.Capabilities, &ews.Assumptions, &ews.CreatedAt, &ews.UpdatedAt, &ews.Similarity); err != nil {
+			return nil, fmt.Errorf("scanning fuzzy entity: %w", err)
+		}
+		results = append(results, ews)
+	}
+	return results, nil
+}
+
+// NormalizeName normalizes an entity name for fuzzy comparison:
+// strips separators (_-spaces), lowercases, and collapses camelCase.
+func NormalizeName(name string) string {
+	// Remove common separators
+	var b []byte
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c == '_' || c == '-' || c == ' ' {
+			continue
+		}
+		// Lowercase
+		if c >= 'A' && c <= 'Z' {
+			b = append(b, c+32)
+		} else {
+			b = append(b, c)
+		}
+	}
+	return string(b)
 }
 
 // DeleteByPath deletes all entities (and cascading facts/relationships) for a given path in a repo.

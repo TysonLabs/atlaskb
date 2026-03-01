@@ -267,6 +267,13 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 			continue
 		}
 
+		// Fast fuzzy dedup: normalized name + same kind + same owner → skip LLM call
+		if matchID, matched := FastFuzzyMatch(ctx, entityStore, cfg.RepoID, ext); matched {
+			entityMap[ext.QualifiedName] = matchID
+			logVerboseF("[phase2] %s: entity %q → SKIP (fast fuzzy match)", job.Target, ext.QualifiedName)
+			continue
+		}
+
 		// No exact match — check for fuzzy matches by name+kind
 		fuzzy, _ := entityStore.FindByNameAndKind(ctx, cfg.RepoID, ext.Name, ext.Kind)
 		if len(fuzzy) > 0 {
