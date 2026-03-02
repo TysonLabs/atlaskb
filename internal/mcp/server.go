@@ -23,11 +23,10 @@ func NewServer(pool *pgxpool.Pool, embedder embeddings.Client) *Server {
 	return &Server{pool: pool, embedder: embedder}
 }
 
-func (s *Server) Run(ctx context.Context) error {
-	srv := gomcp.NewServer(
-		&gomcp.Implementation{Name: "atlaskb", Version: "0.1.0"},
-		nil,
-	)
+// RegisterTools registers all AtlasKB MCP tools on the given go-sdk Server.
+// This is used by both the stdio transport (Run) and the HTTP transport (web server).
+func RegisterTools(srv *gomcp.Server, pool *pgxpool.Pool, embedder embeddings.Client) {
+	s := &Server{pool: pool, embedder: embedder}
 
 	gomcp.AddTool(srv, &gomcp.Tool{
 		Name:        "search_knowledge_base",
@@ -68,24 +67,45 @@ func (s *Server) Run(ctx context.Context) error {
 		Name:        "get_task_context",
 		Description: "Get a bundled context package for a coding task. Combines conventions, module context, service contracts, and decisions for a set of files in one call.",
 	}, s.handleGetTaskContext)
+}
 
+func (s *Server) Run(ctx context.Context) error {
+	srv := gomcp.NewServer(
+		&gomcp.Implementation{Name: "atlaskb", Version: "0.1.0"},
+		nil,
+	)
+	RegisterTools(srv, s.pool, s.embedder)
 	return srv.Run(ctx, &gomcp.StdioTransport{})
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+func (s *Server) batchGetEntities(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]*models.Entity, error) {
+	if len(ids) == 0 {
+		return make(map[uuid.UUID]*models.Entity), nil
+	}
+	store := &models.EntityStore{Pool: s.pool}
+	entities, err := store.GetByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("batch fetching entities: %w", err)
+	}
+	m := make(map[uuid.UUID]*models.Entity, len(entities))
+	for i := range entities {
+		m[entities[i].ID] = &entities[i]
+	}
+	return m, nil
+}
+
 func (s *Server) resolveRepo(ctx context.Context, name string) (*models.Repo, error) {
 	repoStore := &models.RepoStore{Pool: s.pool}
-	repos, err := repoStore.List(ctx)
+	r, err := repoStore.GetByName(ctx, name)
 	if err != nil {
-		return nil, fmt.Errorf("listing repos: %w", err)
+		return nil, fmt.Errorf("looking up repo: %w", err)
 	}
-	for _, r := range repos {
-		if r.Name == name {
-			return &r, nil
-		}
+	if r == nil {
+		return nil, fmt.Errorf("repository %q not found", name)
 	}
-	return nil, fmt.Errorf("repository %q not found", name)
+	return r, nil
 }
 
 func (s *Server) resolveEntity(ctx context.Context, repoID uuid.UUID, path string) (*models.Entity, error) {
@@ -105,6 +125,18 @@ func (s *Server) resolveEntity(ctx context.Context, repoID uuid.UUID, path strin
 		return e, nil
 	}
 	return nil, fmt.Errorf("entity %q not found", path)
+}
+
+func lookupRepoName(ctx context.Context, store *models.RepoStore, cache map[uuid.UUID]string, repoID uuid.UUID) string {
+	if name, ok := cache[repoID]; ok {
+		return name
+	}
+	if r, err := store.GetByID(ctx, repoID); err == nil && r != nil {
+		cache[repoID] = r.Name
+		return r.Name
+	}
+	cache[repoID] = ""
+	return ""
 }
 
 func clampMaxResults(n, defaultN, maxN int) int {
@@ -180,6 +212,7 @@ type searchResultItem struct {
 	Entity     string  `json:"entity"`
 	EntityKind string  `json:"entity_kind"`
 	Path       string  `json:"path,omitempty"`
+	Repo       string  `json:"repo,omitempty"`
 	Claim      string  `json:"claim"`
 	Dimension  string  `json:"dimension"`
 	Category   string  `json:"category"`
@@ -191,11 +224,13 @@ type tripletResultItem struct {
 	Source           string   `json:"source"`
 	SourceKind       string   `json:"source_kind"`
 	SourcePath       string   `json:"source_path,omitempty"`
+	SourceRepo       string   `json:"source_repo,omitempty"`
 	RelationshipKind string   `json:"relationship_kind"`
 	RelDescription   string   `json:"rel_description,omitempty"`
 	Target           string   `json:"target"`
 	TargetKind       string   `json:"target_kind"`
 	TargetPath       string   `json:"target_path,omitempty"`
+	TargetRepo       string   `json:"target_repo,omitempty"`
 	Score            float64  `json:"score"`
 	SourceFacts      []string `json:"source_facts,omitempty"`
 	TargetFacts      []string `json:"target_facts,omitempty"`
@@ -238,6 +273,7 @@ type relationshipItem struct {
 	Name             string `json:"name"`
 	Kind             string `json:"kind"`
 	Path             string `json:"path,omitempty"`
+	Repo             string `json:"repo,omitempty"`
 	RelationshipKind string `json:"relationship_kind"`
 	Direction        string `json:"direction,omitempty"`
 }
@@ -252,6 +288,7 @@ type dependentItem struct {
 	Name             string `json:"name"`
 	Kind             string `json:"kind"`
 	Path             string `json:"path,omitempty"`
+	Repo             string `json:"repo,omitempty"`
 	RelationshipKind string `json:"relationship_kind"`
 }
 
@@ -265,6 +302,7 @@ type impactItem struct {
 	Name             string `json:"name"`
 	Kind             string `json:"kind"`
 	Path             string `json:"path,omitempty"`
+	Repo             string `json:"repo,omitempty"`
 	Direction        string `json:"direction"`
 	RelationshipKind string `json:"relationship_kind"`
 }
@@ -306,6 +344,7 @@ type taskModuleContext struct {
 	Context   *moduleContextResponse   `json:"context,omitempty"`
 	Contract  *serviceContractResponse `json:"contract,omitempty"`
 	Decisions []decisionItem           `json:"decisions,omitempty"`
+	Errors    []string                 `json:"errors,omitempty"`
 }
 
 type stalenessInfo struct {
@@ -326,6 +365,9 @@ func (s *Server) handleSearch(ctx context.Context, req *gomcp.CallToolRequest, a
 	if args.Query == "" {
 		return errorResult("query parameter is required"), nil, nil
 	}
+	if args.Mode != "" && args.Mode != "facts" && args.Mode != "graph" {
+		return errorResult(fmt.Sprintf("invalid mode %q: must be \"facts\" or \"graph\"", args.Mode)), nil, nil
+	}
 
 	limit := args.Limit
 	if limit <= 0 {
@@ -337,19 +379,11 @@ func (s *Server) handleSearch(ctx context.Context, req *gomcp.CallToolRequest, a
 
 	var repoIDs []uuid.UUID
 	if args.Repo != "" {
-		repoStore := &models.RepoStore{Pool: s.pool}
-		repos, err := repoStore.List(ctx)
+		repo, err := s.resolveRepo(ctx, args.Repo)
 		if err != nil {
-			return errorResult(fmt.Sprintf("listing repos: %v", err)), nil, nil
+			return errorResult(err.Error()), nil, nil
 		}
-		for _, r := range repos {
-			if r.Name == args.Repo {
-				repoIDs = append(repoIDs, r.ID)
-			}
-		}
-		if len(repoIDs) == 0 {
-			return errorResult(fmt.Sprintf("repository %q not found", args.Repo)), nil, nil
-		}
+		repoIDs = append(repoIDs, repo.ID)
 	}
 
 	// Graph mode: triplet-ranked search
@@ -364,16 +398,23 @@ func (s *Server) handleSearch(ctx context.Context, req *gomcp.CallToolRequest, a
 			return errorResult(fmt.Sprintf("graph search failed: %v", err)), nil, nil
 		}
 
+		repoStore := &models.RepoStore{Pool: s.pool}
+		repoNameCache := make(map[uuid.UUID]string)
+
 		items := make([]tripletResultItem, 0, len(triplets))
 		for _, t := range triplets {
+			sourceRepo := lookupRepoName(ctx, repoStore, repoNameCache, t.Source.RepoID)
+			targetRepo := lookupRepoName(ctx, repoStore, repoNameCache, t.Target.RepoID)
 			item := tripletResultItem{
 				Source:           t.Source.Name,
 				SourceKind:       t.Source.Kind,
 				SourcePath:       entityPath(&t.Source),
+				SourceRepo:       sourceRepo,
 				RelationshipKind: t.Relationship.Kind,
 				Target:           t.Target.Name,
 				TargetKind:       t.Target.Kind,
 				TargetPath:       entityPath(&t.Target),
+				TargetRepo:       targetRepo,
 				Score:            t.Score,
 			}
 			if t.Relationship.Description != nil {
@@ -407,6 +448,7 @@ func (s *Server) handleSearch(ctx context.Context, req *gomcp.CallToolRequest, a
 			Entity:     r.Entity.Name,
 			EntityKind: r.Entity.Kind,
 			Path:       path,
+			Repo:       r.RepoName,
 			Claim:      r.Fact.Claim,
 			Dimension:  r.Fact.Dimension,
 			Category:   r.Fact.Category,
@@ -443,7 +485,6 @@ func (s *Server) handleListRepos(ctx context.Context, req *gomcp.CallToolRequest
 func (s *Server) handleGetConventions(ctx context.Context, req *gomcp.CallToolRequest, args getConventionsInput) (*gomcp.CallToolResult, any, error) {
 	limit := clampMaxResults(args.MaxResults, 50, 200)
 	factStore := &models.FactStore{Pool: s.pool}
-	entityStore := &models.EntityStore{Pool: s.pool}
 
 	var facts []models.Fact
 
@@ -466,6 +507,16 @@ func (s *Server) handleGetConventions(ctx context.Context, req *gomcp.CallToolRe
 		}
 	}
 
+	// Batch fetch all referenced entities
+	entityIDs := make([]uuid.UUID, 0, len(facts))
+	for _, f := range facts {
+		entityIDs = append(entityIDs, f.EntityID)
+	}
+	entityMap, err := s.batchGetEntities(ctx, entityIDs)
+	if err != nil {
+		return errorResult(fmt.Sprintf("fetching entities: %v", err)), nil, nil
+	}
+
 	repoStore := &models.RepoStore{Pool: s.pool}
 	repoNameCache := make(map[uuid.UUID]string)
 
@@ -473,10 +524,7 @@ func (s *Server) handleGetConventions(ctx context.Context, req *gomcp.CallToolRe
 	seen := make(map[string]bool) // deduplicate similar claims across repos
 	for _, f := range facts {
 		// Deduplicate: skip if we've seen a very similar claim
-		claimKey := models.NormalizeName(f.Claim)
-		if len(claimKey) > 80 {
-			claimKey = claimKey[:80]
-		}
+		claimKey := f.Dimension + ":" + models.NormalizeName(f.Claim)
 		if seen[claimKey] {
 			continue
 		}
@@ -487,8 +535,7 @@ func (s *Server) handleGetConventions(ctx context.Context, req *gomcp.CallToolRe
 			Dimension:  f.Dimension,
 			Confidence: f.Confidence,
 		}
-		e, err := entityStore.GetByID(ctx, f.EntityID)
-		if err == nil && e != nil {
+		if e, ok := entityMap[f.EntityID]; ok && e != nil {
 			item.Entity = e.Name
 			item.EntityKind = e.Kind
 			item.Path = entityPath(e)
@@ -496,14 +543,7 @@ func (s *Server) handleGetConventions(ctx context.Context, req *gomcp.CallToolRe
 
 		// Tag with repo name in org-wide mode
 		if args.Repo == "" {
-			name, ok := repoNameCache[f.RepoID]
-			if !ok {
-				if r, err := repoStore.GetByID(ctx, f.RepoID); err == nil && r != nil {
-					name = r.Name
-				}
-				repoNameCache[f.RepoID] = name
-			}
-			item.Repo = name
+			item.Repo = lookupRepoName(ctx, repoStore, repoNameCache, f.RepoID)
 		}
 
 		items = append(items, item)
@@ -522,6 +562,9 @@ func (s *Server) handleGetModuleContext(ctx context.Context, req *gomcp.CallTool
 	if args.Path == "" {
 		return errorResult("path parameter is required"), nil, nil
 	}
+	if args.Depth != "" && args.Depth != "shallow" && args.Depth != "deep" {
+		return errorResult(fmt.Sprintf("invalid depth %q: must be \"shallow\" or \"deep\"", args.Depth)), nil, nil
+	}
 
 	repo, err := s.resolveRepo(ctx, args.Repo)
 	if err != nil {
@@ -536,12 +579,9 @@ func (s *Server) handleGetModuleContext(ctx context.Context, req *gomcp.CallTool
 	limit := clampMaxResults(args.MaxResults, 50, 200)
 
 	factStore := &models.FactStore{Pool: s.pool}
-	facts, err := factStore.ListByEntity(ctx, entity.ID)
+	facts, err := factStore.ListByEntityLimited(ctx, entity.ID, limit)
 	if err != nil {
 		return errorResult(fmt.Sprintf("listing facts: %v", err)), nil, nil
-	}
-	if len(facts) > limit {
-		facts = facts[:limit]
 	}
 
 	factItems := make([]factItem, 0, len(facts))
@@ -561,31 +601,45 @@ func (s *Server) handleGetModuleContext(ctx context.Context, req *gomcp.CallTool
 
 	if args.Depth == "deep" {
 		relStore := &models.RelationshipStore{Pool: s.pool}
-		rels, err := relStore.ListByEntity(ctx, entity.ID)
+		rels, err := relStore.ListByEntityLimited(ctx, entity.ID, limit)
 		if err != nil {
 			return errorResult(fmt.Sprintf("listing relationships: %v", err)), nil, nil
 		}
-		if len(rels) > limit {
-			rels = rels[:limit]
+
+		// Batch fetch other-end entities
+		otherIDs := make([]uuid.UUID, 0, len(rels))
+		for _, r := range rels {
+			if r.FromEntityID == entity.ID {
+				otherIDs = append(otherIDs, r.ToEntityID)
+			} else {
+				otherIDs = append(otherIDs, r.FromEntityID)
+			}
+		}
+		otherMap, err := s.batchGetEntities(ctx, otherIDs)
+		if err != nil {
+			return errorResult(fmt.Sprintf("fetching related entities: %v", err)), nil, nil
 		}
 
-		entityStore := &models.EntityStore{Pool: s.pool}
+		repoStore := &models.RepoStore{Pool: s.pool}
+		repoNameCache := make(map[uuid.UUID]string)
 		relItems := make([]relationshipItem, 0, len(rels))
 		for _, r := range rels {
 			ri := relationshipItem{RelationshipKind: r.Kind}
 			if r.FromEntityID == entity.ID {
 				ri.Direction = "outgoing"
-				if other, err := entityStore.GetByID(ctx, r.ToEntityID); err == nil && other != nil {
+				if other, ok := otherMap[r.ToEntityID]; ok && other != nil {
 					ri.Name = other.Name
 					ri.Kind = other.Kind
 					ri.Path = entityPath(other)
+					ri.Repo = lookupRepoName(ctx, repoStore, repoNameCache, other.RepoID)
 				}
 			} else {
 				ri.Direction = "incoming"
-				if other, err := entityStore.GetByID(ctx, r.FromEntityID); err == nil && other != nil {
+				if other, ok := otherMap[r.FromEntityID]; ok && other != nil {
 					ri.Name = other.Name
 					ri.Kind = other.Kind
 					ri.Path = entityPath(other)
+					ri.Repo = lookupRepoName(ctx, repoStore, repoNameCache, other.RepoID)
 				}
 			}
 			relItems = append(relItems, ri)
@@ -622,20 +676,32 @@ func (s *Server) handleGetServiceContract(ctx context.Context, req *gomcp.CallTo
 		return errorResult(fmt.Sprintf("listing dependents: %v", err)), nil, nil
 	}
 
-	entityStore := &models.EntityStore{Pool: s.pool}
+	// Batch fetch dependent entities
+	depIDs := make([]uuid.UUID, 0, len(rels))
+	for _, r := range rels {
+		depIDs = append(depIDs, r.FromEntityID)
+	}
+	depMap, err := s.batchGetEntities(ctx, depIDs)
+	if err != nil {
+		return errorResult(fmt.Sprintf("fetching dependent entities: %v", err)), nil, nil
+	}
+
+	repoStore := &models.RepoStore{Pool: s.pool}
+	repoNameCache := make(map[uuid.UUID]string)
 	dependents := make([]dependentItem, 0, len(rels))
 	for _, r := range rels {
 		di := dependentItem{RelationshipKind: r.Kind}
-		if other, err := entityStore.GetByID(ctx, r.FromEntityID); err == nil && other != nil {
+		if other, ok := depMap[r.FromEntityID]; ok && other != nil {
 			di.Name = other.Name
 			di.Kind = other.Kind
 			di.Path = entityPath(other)
+			di.Repo = lookupRepoName(ctx, repoStore, repoNameCache, other.RepoID)
 		}
 		dependents = append(dependents, di)
 	}
 
 	factStore := &models.FactStore{Pool: s.pool}
-	allFacts, err := factStore.ListByEntity(ctx, entity.ID)
+	allFacts, err := factStore.ListByEntityLimited(ctx, entity.ID, limit)
 	if err != nil {
 		return errorResult(fmt.Sprintf("listing facts: %v", err)), nil, nil
 	}
@@ -699,11 +765,16 @@ func (s *Server) handleGetImpactAnalysis(ctx context.Context, req *gomcp.CallToo
 		MaxHops:     maxHops,
 		RelKinds:    args.RelKinds,
 		MaxEntities: limit,
+		CrossRepo:   true,
 	}
 	subgraph, err := relStore.TraverseFromEntity(ctx, entity.ID, opts)
 	if err != nil {
 		return errorResult(fmt.Sprintf("traversing graph: %v", err)), nil, nil
 	}
+
+	// Shared repo name cache for impact items and affected repos
+	repoStore := &models.RepoStore{Pool: s.pool}
+	repoNameCache := make(map[uuid.UUID]string)
 
 	// Build direct impacts (1-hop, backward compatible)
 	directImpacts := make([]impactItem, 0)
@@ -721,6 +792,7 @@ func (s *Server) handleGetImpactAnalysis(ctx context.Context, req *gomcp.CallToo
 				ii.Name = other.Name
 				ii.Kind = other.Kind
 				ii.Path = entityPath(&other)
+				ii.Repo = lookupRepoName(ctx, repoStore, repoNameCache, other.RepoID)
 			}
 		} else {
 			ii.Direction = "depended_by"
@@ -728,6 +800,7 @@ func (s *Server) handleGetImpactAnalysis(ctx context.Context, req *gomcp.CallToo
 				ii.Name = other.Name
 				ii.Kind = other.Kind
 				ii.Path = entityPath(&other)
+				ii.Repo = lookupRepoName(ctx, repoStore, repoNameCache, other.RepoID)
 			}
 		}
 		directImpacts = append(directImpacts, ii)
@@ -736,21 +809,13 @@ func (s *Server) handleGetImpactAnalysis(ctx context.Context, req *gomcp.CallToo
 	// Build transitive paths using BFS parent-pointer tracing
 	transitivePaths := buildTransitivePaths(entity.ID, subgraph)
 
-	// Collect affected repos
-	repoStore := &models.RepoStore{Pool: s.pool}
-	repoNameCache := make(map[uuid.UUID]string)
+	// Collect affected repos (reuses the shared repoNameCache populated above)
 	repoSet := make(map[string]bool)
 	for _, e := range subgraph.Entities {
 		if e.ID == entity.ID {
 			continue
 		}
-		name, ok := repoNameCache[e.RepoID]
-		if !ok {
-			if r, err := repoStore.GetByID(ctx, e.RepoID); err == nil && r != nil {
-				name = r.Name
-			}
-			repoNameCache[e.RepoID] = name
-		}
+		name := lookupRepoName(ctx, repoStore, repoNameCache, e.RepoID)
 		if name != "" && name != repo.Name {
 			repoSet[name] = true
 		}
@@ -911,6 +976,12 @@ func (s *Server) handleGetTaskContext(ctx context.Context, req *gomcp.CallToolRe
 	if len(args.Files) == 0 {
 		return errorResult("files parameter is required"), nil, nil
 	}
+	if len(args.Files) > 20 {
+		return errorResult(fmt.Sprintf("too many files: max 20, got %d", len(args.Files))), nil, nil
+	}
+	if args.Depth != "" && args.Depth != "shallow" && args.Depth != "deep" {
+		return errorResult(fmt.Sprintf("invalid depth %q: must be \"shallow\" or \"deep\"", args.Depth)), nil, nil
+	}
 
 	repo, err := s.resolveRepo(ctx, args.Repo)
 	if err != nil {
@@ -926,7 +997,16 @@ func (s *Server) handleGetTaskContext(ctx context.Context, req *gomcp.CallToolRe
 		return errorResult(fmt.Sprintf("listing conventions: %v", err)), nil, nil
 	}
 
-	entityStore := &models.EntityStore{Pool: s.pool}
+	// Batch fetch convention entities
+	convEntityIDs := make([]uuid.UUID, 0, len(convFacts))
+	for _, f := range convFacts {
+		convEntityIDs = append(convEntityIDs, f.EntityID)
+	}
+	convEntityMap, err := s.batchGetEntities(ctx, convEntityIDs)
+	if err != nil {
+		return errorResult(fmt.Sprintf("fetching convention entities: %v", err)), nil, nil
+	}
+
 	conventions := make([]conventionItem, 0, len(convFacts))
 	for _, f := range convFacts {
 		item := conventionItem{
@@ -934,7 +1014,7 @@ func (s *Server) handleGetTaskContext(ctx context.Context, req *gomcp.CallToolRe
 			Dimension:  f.Dimension,
 			Confidence: f.Confidence,
 		}
-		if e, err := entityStore.GetByID(ctx, f.EntityID); err == nil && e != nil {
+		if e, ok := convEntityMap[f.EntityID]; ok && e != nil {
 			item.Entity = e.Name
 			item.EntityKind = e.Kind
 			item.Path = entityPath(e)
@@ -943,21 +1023,25 @@ func (s *Server) handleGetTaskContext(ctx context.Context, req *gomcp.CallToolRe
 	}
 
 	// Fetch per-file context
+	repoStore := &models.RepoStore{Pool: s.pool}
+	relStore := &models.RelationshipStore{Pool: s.pool}
+	decisionStore := &models.DecisionStore{Pool: s.pool}
+	repoNameCache := make(map[uuid.UUID]string)
 	modules := make([]taskModuleContext, 0, len(args.Files))
 	for _, filePath := range args.Files {
 		mc := taskModuleContext{Path: filePath}
 
 		entity, err := s.resolveEntity(ctx, repo.ID, filePath)
 		if err != nil {
-			// Entity not found — include path but skip context
+			mc.Errors = append(mc.Errors, fmt.Sprintf("resolving entity: %v", err))
 			modules = append(modules, mc)
 			continue
 		}
 
 		// Module context
-		facts, _ := factStore.ListByEntity(ctx, entity.ID)
-		if len(facts) > limit {
-			facts = facts[:limit]
+		facts, err := factStore.ListByEntityLimited(ctx, entity.ID, limit)
+		if err != nil {
+			mc.Errors = append(mc.Errors, fmt.Sprintf("listing facts: %v", err))
 		}
 		factItems := make([]factItem, 0, len(facts))
 		for _, f := range facts {
@@ -975,74 +1059,103 @@ func (s *Server) handleGetTaskContext(ctx context.Context, req *gomcp.CallToolRe
 		}
 
 		if args.Depth == "deep" {
-			relStore := &models.RelationshipStore{Pool: s.pool}
-			rels, _ := relStore.ListByEntity(ctx, entity.ID)
-			if len(rels) > limit {
-				rels = rels[:limit]
-			}
-			relItems := make([]relationshipItem, 0, len(rels))
-			for _, r := range rels {
-				ri := relationshipItem{RelationshipKind: r.Kind}
-				if r.FromEntityID == entity.ID {
-					ri.Direction = "outgoing"
-					if other, err := entityStore.GetByID(ctx, r.ToEntityID); err == nil && other != nil {
-						ri.Name = other.Name
-						ri.Kind = other.Kind
-						ri.Path = entityPath(other)
-					}
-				} else {
-					ri.Direction = "incoming"
-					if other, err := entityStore.GetByID(ctx, r.FromEntityID); err == nil && other != nil {
-						ri.Name = other.Name
-						ri.Kind = other.Kind
-						ri.Path = entityPath(other)
+			rels, err := relStore.ListByEntityLimited(ctx, entity.ID, limit)
+			if err != nil {
+				mc.Errors = append(mc.Errors, fmt.Sprintf("listing relationships: %v", err))
+			} else {
+				// Batch fetch other-end entities
+				otherIDs := make([]uuid.UUID, 0, len(rels))
+				for _, r := range rels {
+					if r.FromEntityID == entity.ID {
+						otherIDs = append(otherIDs, r.ToEntityID)
+					} else {
+						otherIDs = append(otherIDs, r.FromEntityID)
 					}
 				}
-				relItems = append(relItems, ri)
+				otherMap, batchErr := s.batchGetEntities(ctx, otherIDs)
+				if batchErr != nil {
+					mc.Errors = append(mc.Errors, fmt.Sprintf("fetching related entities: %v", batchErr))
+				} else {
+					relItems := make([]relationshipItem, 0, len(rels))
+					for _, r := range rels {
+						ri := relationshipItem{RelationshipKind: r.Kind}
+						if r.FromEntityID == entity.ID {
+							ri.Direction = "outgoing"
+							if other, ok := otherMap[r.ToEntityID]; ok && other != nil {
+								ri.Name = other.Name
+								ri.Kind = other.Kind
+								ri.Path = entityPath(other)
+								ri.Repo = lookupRepoName(ctx, repoStore, repoNameCache, other.RepoID)
+							}
+						} else {
+							ri.Direction = "incoming"
+							if other, ok := otherMap[r.FromEntityID]; ok && other != nil {
+								ri.Name = other.Name
+								ri.Kind = other.Kind
+								ri.Path = entityPath(other)
+								ri.Repo = lookupRepoName(ctx, repoStore, repoNameCache, other.RepoID)
+							}
+						}
+						relItems = append(relItems, ri)
+					}
+					modCtx.Relationships = relItems
+				}
 			}
-			modCtx.Relationships = relItems
 		}
 
 		mc.Context = modCtx
 
 		// Service contract
-		relStore := &models.RelationshipStore{Pool: s.pool}
-		depRels, _ := relStore.ListDependentsOf(ctx, entity.ID, limit)
-		if len(depRels) > 0 {
-			dependents := make([]dependentItem, 0, len(depRels))
+		depRels, err := relStore.ListDependentsOf(ctx, entity.ID, limit)
+		if err != nil {
+			mc.Errors = append(mc.Errors, fmt.Sprintf("listing dependents: %v", err))
+		} else if len(depRels) > 0 {
+			// Batch fetch dependent entities
+			depIDs := make([]uuid.UUID, 0, len(depRels))
 			for _, r := range depRels {
-				di := dependentItem{RelationshipKind: r.Kind}
-				if other, err := entityStore.GetByID(ctx, r.FromEntityID); err == nil && other != nil {
-					di.Name = other.Name
-					di.Kind = other.Kind
-					di.Path = entityPath(other)
-				}
-				dependents = append(dependents, di)
+				depIDs = append(depIDs, r.FromEntityID)
 			}
-
-			invariants := make([]factItem, 0)
-			for _, f := range facts {
-				if f.Category == models.CategoryBehavior || f.Category == models.CategoryConstraint {
-					invariants = append(invariants, factItem{
-						Claim:      f.Claim,
-						Dimension:  f.Dimension,
-						Category:   f.Category,
-						Confidence: f.Confidence,
-					})
+			depMap, batchErr := s.batchGetEntities(ctx, depIDs)
+			if batchErr != nil {
+				mc.Errors = append(mc.Errors, fmt.Sprintf("fetching dependent entities: %v", batchErr))
+			} else {
+				dependents := make([]dependentItem, 0, len(depRels))
+				for _, r := range depRels {
+					di := dependentItem{RelationshipKind: r.Kind}
+					if other, ok := depMap[r.FromEntityID]; ok && other != nil {
+						di.Name = other.Name
+						di.Kind = other.Kind
+						di.Path = entityPath(other)
+						di.Repo = lookupRepoName(ctx, repoStore, repoNameCache, other.RepoID)
+					}
+					dependents = append(dependents, di)
 				}
-			}
 
-			mc.Contract = &serviceContractResponse{
-				Entity:     toEntitySummary(entity),
-				Dependents: dependents,
-				Invariants: invariants,
+				invariants := make([]factItem, 0)
+				for _, f := range facts {
+					if f.Category == models.CategoryBehavior || f.Category == models.CategoryConstraint {
+						invariants = append(invariants, factItem{
+							Claim:      f.Claim,
+							Dimension:  f.Dimension,
+							Category:   f.Category,
+							Confidence: f.Confidence,
+						})
+					}
+				}
+
+				mc.Contract = &serviceContractResponse{
+					Entity:     toEntitySummary(entity),
+					Dependents: dependents,
+					Invariants: invariants,
+				}
 			}
 		}
 
 		// Decisions
-		decisionStore := &models.DecisionStore{Pool: s.pool}
-		decisions, _ := decisionStore.ListByEntity(ctx, entity.ID, limit)
-		if len(decisions) > 0 {
+		decisions, err := decisionStore.ListByEntity(ctx, entity.ID, limit)
+		if err != nil {
+			mc.Errors = append(mc.Errors, fmt.Sprintf("listing decisions: %v", err))
+		} else if len(decisions) > 0 {
 			mc.Decisions = make([]decisionItem, 0, len(decisions))
 			for _, d := range decisions {
 				mc.Decisions = append(mc.Decisions, decisionItem{

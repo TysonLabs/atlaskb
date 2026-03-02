@@ -83,6 +83,31 @@ func (s *RelationshipStore) ListByEntity(ctx context.Context, entityID uuid.UUID
 	return rels, nil
 }
 
+func (s *RelationshipStore) ListByEntityLimited(ctx context.Context, entityID uuid.UUID, limit int) ([]Relationship, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT id, repo_id, from_entity_id, to_entity_id, kind, description, strength, provenance, created_at
+		 FROM relationships WHERE from_entity_id = $1 OR to_entity_id = $1 ORDER BY kind LIMIT $2`, entityID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing relationships: %w", err)
+	}
+	defer rows.Close()
+
+	var rels []Relationship
+	for rows.Next() {
+		var r Relationship
+		var provJSON []byte
+		if err := rows.Scan(&r.ID, &r.RepoID, &r.FromEntityID, &r.ToEntityID, &r.Kind, &r.Description, &r.Strength, &provJSON, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scanning relationship: %w", err)
+		}
+		if err := json.Unmarshal(provJSON, &r.Provenance); err != nil {
+			return nil, fmt.Errorf("unmarshaling provenance: %w", err)
+		}
+		rels = append(rels, r)
+	}
+	return rels, nil
+}
+
 func (s *RelationshipStore) ListByRepo(ctx context.Context, repoID uuid.UUID) ([]Relationship, error) {
 	rows, err := s.Pool.Query(ctx,
 		`SELECT id, repo_id, from_entity_id, to_entity_id, kind, description, strength, provenance, created_at
