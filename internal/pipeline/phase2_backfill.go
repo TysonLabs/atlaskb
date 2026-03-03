@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -89,9 +90,9 @@ type BackfillConfig struct {
 
 type BackfillStats struct {
 	OrphanEntities int
-	FilesProcessed int
-	FactsCreated   int
-	RelsCreated    int
+	FilesProcessed atomic.Int64
+	FactsCreated   atomic.Int64
+	RelsCreated    atomic.Int64
 }
 
 func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error) {
@@ -170,12 +171,9 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 
 			prompt := backfillPrompt(w.path, fi.Language, fileContent, names)
 
-			// Use full remaining context window for output tokens
-			maxTokens := maxOutputTokens(ctxWin, len(systemPromptBackfill), len(prompt))
-
 			resp, _, err := callLLMWithRetry(gctx, cfg.LLM, cfg.Model, systemPromptBackfill, []llm.Message{
 				{Role: "user", Content: prompt},
-			}, maxTokens, SchemaPhase2, DefaultRetryConfig)
+			}, 0, SchemaPhase2, DefaultRetryConfig)
 			if err != nil {
 				logVerboseF("[backfill] %s: LLM error: %v", w.path, err)
 				return nil
@@ -188,13 +186,6 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 			}
 
 			cleaned := CleanJSON(resp.Content)
-			// If truncated, try to repair before parsing
-			if resp.StopReason == "length" {
-				if repaired, ok := RepairTruncatedJSON(cleaned); ok {
-					cleaned = trailingComma.ReplaceAllString(repaired, `$1`)
-					log.Printf("[backfill] %s: repaired truncated JSON", w.path)
-				}
-			}
 			var result BackfillResult
 			if err := parseJSON(cleaned, &result); err != nil {
 				logVerboseF("[backfill] %s: parse error: %v", w.path, err)
@@ -273,9 +264,9 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 				}
 			}
 
-			stats.FilesProcessed++
-			stats.FactsCreated += factsCreated
-			stats.RelsCreated += relsCreated
+			stats.FilesProcessed.Add(1)
+			stats.FactsCreated.Add(int64(factsCreated))
+			stats.RelsCreated.Add(int64(relsCreated))
 			logVerboseF("[backfill] %s: %d facts, %d relationships for %d entities",
 				w.path, factsCreated, relsCreated, len(w.entities))
 
@@ -288,7 +279,7 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 	}
 
 	log.Printf("[backfill] fact pass: %d orphans, %d files, %d facts, %d relationships",
-		stats.OrphanEntities, stats.FilesProcessed, stats.FactsCreated, stats.RelsCreated)
+		stats.OrphanEntities, stats.FilesProcessed.Load(), stats.FactsCreated.Load(), stats.RelsCreated.Load())
 
 	// Round 2: Fix isolated entities (no relationships) with deterministic "owns" relationships
 	isolated, err := entityStore.ListWithoutRelationships(ctx, cfg.RepoID)
@@ -330,7 +321,7 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 
 	if autoRels > 0 {
 		fmt.Printf("  Auto-created %d 'owns' relationships for isolated methods\n", autoRels)
-		stats.RelsCreated += autoRels
+		stats.RelsCreated.Add(int64(autoRels))
 	}
 
 	// Round 3: For remaining isolated entities, try LLM-based relationship generation
@@ -388,12 +379,9 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 
 				prompt := backfillPrompt(w.path, fi.Language, fileContent, names)
 
-				// Use full remaining context window for output tokens
-				maxTokens := maxOutputTokens(ctxWin, len(systemPromptBackfill), len(prompt))
-
 				resp, _, err := callLLMWithRetry(gctx2, cfg.LLM, cfg.Model, systemPromptBackfill, []llm.Message{
 					{Role: "user", Content: prompt},
-				}, maxTokens, SchemaPhase2, DefaultRetryConfig)
+				}, 0, SchemaPhase2, DefaultRetryConfig)
 				if err != nil {
 					return nil
 				}
@@ -404,12 +392,6 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 				}
 
 				cleaned := CleanJSON(resp.Content)
-				if resp.StopReason == "length" {
-					if repaired, ok := RepairTruncatedJSON(cleaned); ok {
-						cleaned = trailingComma.ReplaceAllString(repaired, `$1`)
-						log.Printf("[backfill-rel] %s: repaired truncated JSON", w.path)
-					}
-				}
 				var result BackfillResult
 				if err := parseJSON(cleaned, &result); err != nil {
 					return nil
@@ -454,7 +436,7 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 					}
 				}
 
-				stats.RelsCreated += relsCreated
+				stats.RelsCreated.Add(int64(relsCreated))
 				if relsCreated > 0 {
 					logVerboseF("[backfill-rel] %s: %d relationships for %d entities", w.path, relsCreated, len(w.entities))
 				}
@@ -467,7 +449,7 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 	}
 
 	log.Printf("[backfill] completed: %d orphans, %d files, %d facts, %d total relationships",
-		stats.OrphanEntities, stats.FilesProcessed, stats.FactsCreated, stats.RelsCreated)
+		stats.OrphanEntities, stats.FilesProcessed.Load(), stats.FactsCreated.Load(), stats.RelsCreated.Load())
 
 	return stats, nil
 }

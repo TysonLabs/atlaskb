@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/kaptinlin/jsonrepair"
 	"github.com/tgeorge06/atlaskb/internal/models"
 )
 
@@ -65,9 +66,9 @@ type Phase4Result struct {
 
 // Phase5Result is the parsed output from a phase 5 LLM call.
 type Phase5Result struct {
-	Summary      string `json:"summary"`
+	Summary      string   `json:"summary"`
 	Capabilities []string `json:"capabilities"`
-	Architecture string `json:"architecture"`
+	Architecture string   `json:"architecture"`
 	Conventions  []struct {
 		Category    string   `json:"category"`
 		Description string   `json:"description"`
@@ -88,361 +89,41 @@ type GitLogResult struct {
 	} `json:"decisions"`
 }
 
-var (
-	fencePattern  = regexp.MustCompile("(?s)```(?:json)?\\s*\n?(.*?)\\s*```")
-	singleFence   = regexp.MustCompile("(?s)^`([^`].*?)`$")
-	trailingComma = regexp.MustCompile(`,\s*([}\]])`)
-	// Match unquoted JSON keys: word characters after { or , followed by :
-	unquotedKey   = regexp.MustCompile(`([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:`)
-	// Match missing comma: end of value followed by newline/whitespace then a quoted key
-	// e.g. "value"\n  "key": → "value",\n  "key":
-	missingComma  = regexp.MustCompile(`("|\d|true|false|null|\]|\})\s*\n(\s*")`)
-)
+var fencePattern = regexp.MustCompile("(?s)```(?:json)?\\s*\n?(.*?)\\s*```")
 
-// CleanJSON strips markdown code fences and other common LLM output artifacts.
+// CleanJSON repairs malformed JSON from LLM output using jsonrepair (a port of
+// the battle-tested JavaScript jsonrepair library). It handles missing commas,
+// unquoted keys, trailing commas, truncated output, markdown fences, and more.
 func CleanJSON(raw string) string {
 	raw = strings.TrimSpace(raw)
 
-	// Strip markdown code fences (triple backticks)
+	// Strip markdown code fences before repair.
 	if matches := fencePattern.FindStringSubmatch(raw); len(matches) > 1 {
 		raw = strings.TrimSpace(matches[1])
 	}
 
-	// Strip single-backtick wrapping
-	if matches := singleFence.FindStringSubmatch(raw); len(matches) > 1 {
-		raw = strings.TrimSpace(matches[1])
-	}
-
-	// Remove any remaining stray backticks
-	raw = strings.ReplaceAll(raw, "`", "")
-
-	// Strip "Thinking Process:" or similar preamble before JSON
+	// Strip preamble text before JSON (e.g. "Thinking Process: ...")
+	// Don't strip if the raw input looks like a JSON array (starts with '[{' or '[ {').
 	if idx := strings.Index(raw, "{"); idx > 0 {
-		// Check if everything before { is non-JSON preamble
-		preamble := strings.TrimSpace(raw[:idx])
-		if len(preamble) > 0 && !strings.HasPrefix(preamble, "[") {
+		prefix := strings.TrimSpace(raw[:idx])
+		looksLikeArray := len(prefix) == 1 && prefix[0] == '['
+		if !looksLikeArray {
 			raw = raw[idx:]
 		}
 	}
 
-	// Find the first { or [ to start the JSON
-	start := strings.IndexAny(raw, "{[")
-	if start < 0 {
-		return raw
+	// jsonrepair handles missing commas, unquoted keys, trailing commas,
+	// single quotes, truncated JSON, Python constants, and more.
+	if repaired, err := jsonrepair.Repair(raw); err == nil {
+		return repaired
 	}
 
-	opener := raw[start]
-	var closer byte = '}'
-	if opener == '[' {
-		closer = ']'
-	}
-
-	// Walk forward to find the balanced closing bracket
-	depth := 0
-	inString := false
-	escaped := false
-	end := -1
-	for i := start; i < len(raw); i++ {
-		c := raw[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		if c == '\\' && inString {
-			escaped = true
-			continue
-		}
-		if c == '"' {
-			inString = !inString
-			continue
-		}
-		if inString {
-			continue
-		}
-		if c == opener || (opener == '{' && c == '{') || (opener == '[' && c == '[') {
-			if c == '{' || c == '[' {
-				depth++
-			}
-		}
-		if c == closer || (closer == '}' && c == '}') || (closer == ']' && c == ']') {
-			if c == '}' || c == ']' {
-				depth--
-			}
-		}
-		if depth == 0 {
-			end = i
-			break
-		}
-	}
-
-	if end < 0 {
-		// Fallback: use LastIndex approach
-		end = strings.LastIndexByte(raw, closer)
-		if end < 0 {
-			return raw[start:]
-		}
-	}
-
-	result := raw[start : end+1]
-
-	// Strip ellipsis placeholders outside of quoted strings
-	result = stripEllipsis(result)
-
-	// Fix unquoted JSON keys (common with local models)
-	result = unquotedKey.ReplaceAllString(result, `${1}"${2}":`)
-
-	// Fix unquoted string values (common with local models)
-	// Match patterns like: "key": word_value (where word_value is not a JSON literal)
-	result = fixUnquotedValues(result)
-
-	// Fix missing commas between JSON entries (common with local models)
-	result = fixMissingCommas(result)
-
-	// Fix trailing commas after cleanup
-	result = trailingComma.ReplaceAllString(result, `$1`)
-
-	return result
+	// If jsonrepair fails entirely, return the stripped input as-is so the
+	// caller's json.Unmarshal produces a descriptive error.
+	return raw
 }
 
-// fixMissingCommas inserts commas between JSON entries where they're missing.
-// Common pattern: "value"\n  "key": → "value",\n  "key":
-// Works in a string-aware manner to avoid modifying content inside quoted strings.
-func fixMissingCommas(s string) string {
-	var out strings.Builder
-	out.Grow(len(s) + 100)
-	inString := false
-	escaped := false
-
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-
-		if escaped {
-			out.WriteByte(c)
-			escaped = false
-			continue
-		}
-		if c == '\\' && inString {
-			out.WriteByte(c)
-			escaped = true
-			continue
-		}
-		if c == '"' {
-			inString = !inString
-			out.WriteByte(c)
-			continue
-		}
-		if inString {
-			out.WriteByte(c)
-			continue
-		}
-
-		// Outside a string: check if we're at a value-end followed by whitespace then a quote (key start)
-		// Value ends: ", digit, e/E (exponent), ], }
-		if c == '\n' || c == '\r' {
-			// Look back for a value-ending character
-			prevNonWS := lastNonWhitespace(out.String())
-			// Look ahead for a key-starting quote
-			nextNonWS := nextNonWhitespaceChar(s, i+1)
-
-			needsComma := false
-			if prevNonWS == '"' || prevNonWS == ']' || prevNonWS == '}' ||
-				(prevNonWS >= '0' && prevNonWS <= '9') ||
-				prevNonWS == 'e' || prevNonWS == 'E' {
-				if nextNonWS == '"' {
-					needsComma = true
-				}
-			}
-
-			if needsComma {
-				out.WriteByte(',')
-			}
-			out.WriteByte(c)
-			continue
-		}
-
-		out.WriteByte(c)
-	}
-
-	return out.String()
-}
-
-func lastNonWhitespace(s string) byte {
-	for i := len(s) - 1; i >= 0; i-- {
-		c := s[i]
-		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
-			return c
-		}
-	}
-	return 0
-}
-
-func nextNonWhitespaceChar(s string, from int) byte {
-	for i := from; i < len(s); i++ {
-		c := s[i]
-		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
-			return c
-		}
-	}
-	return 0
-}
-
-// fixUnquotedValues wraps unquoted string values in JSON with double quotes.
-// Handles cases like "key": some_value → "key": "some_value"
-// Only operates outside of quoted strings.
-var unquotedValuePattern = regexp.MustCompile(`(:\s*)([a-zA-Z_][a-zA-Z0-9_]*(?:\s+[a-zA-Z_][a-zA-Z0-9_]*)*)(\s*[,}\]])`)
-
-func fixUnquotedValues(s string) string {
-	jsonLiterals := map[string]bool{"true": true, "false": true, "null": true}
-
-	// Process in a string-aware way
-	var out strings.Builder
-	out.Grow(len(s))
-	inString := false
-	escaped := false
-
-	i := 0
-	for i < len(s) {
-		c := s[i]
-
-		if escaped {
-			out.WriteByte(c)
-			escaped = false
-			i++
-			continue
-		}
-		if c == '\\' && inString {
-			out.WriteByte(c)
-			escaped = true
-			i++
-			continue
-		}
-		if c == '"' {
-			inString = !inString
-			out.WriteByte(c)
-			i++
-			continue
-		}
-		if inString {
-			out.WriteByte(c)
-			i++
-			continue
-		}
-
-		// Outside a string, check if we're at a colon followed by an unquoted value
-		if c == ':' {
-			out.WriteByte(c)
-			i++
-			// Skip whitespace after colon
-			for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
-				out.WriteByte(s[i])
-				i++
-			}
-			if i >= len(s) {
-				continue
-			}
-			// Check if next char starts an unquoted identifier (not a JSON value start)
-			next := s[i]
-			if next != '"' && next != '{' && next != '[' && next != '-' && !(next >= '0' && next <= '9') {
-				// Collect the unquoted value
-				start := i
-				for i < len(s) && s[i] != ',' && s[i] != '}' && s[i] != ']' && s[i] != '\n' {
-					i++
-				}
-				val := strings.TrimSpace(s[start:i])
-				if !jsonLiterals[val] && len(val) > 0 {
-					out.WriteByte('"')
-					out.WriteString(val)
-					out.WriteByte('"')
-				} else {
-					out.WriteString(val)
-				}
-				continue
-			}
-			continue
-		}
-
-		out.WriteByte(c)
-		i++
-	}
-
-	return out.String()
-}
-
-// stripEllipsis removes all sequences of 2+ dots that appear outside quoted strings,
-// replacing them with null (if after a colon) or removing them (if in arrays/elsewhere).
-// This handles all the various ways local LLMs use "..." as placeholder values.
-func stripEllipsis(s string) string {
-	var out strings.Builder
-	out.Grow(len(s))
-
-	inString := false
-	escaped := false
-
-	i := 0
-	for i < len(s) {
-		c := s[i]
-
-		if escaped {
-			out.WriteByte(c)
-			escaped = false
-			i++
-			continue
-		}
-
-		if c == '\\' && inString {
-			out.WriteByte(c)
-			escaped = true
-			i++
-			continue
-		}
-
-		if c == '"' {
-			inString = !inString
-			out.WriteByte(c)
-			i++
-			continue
-		}
-
-		if inString {
-			out.WriteByte(c)
-			i++
-			continue
-		}
-
-		// Outside a string: check for sequences of 2+ dots
-		if c == '.' && i+1 < len(s) && s[i+1] == '.' {
-			// Count consecutive dots
-			dotEnd := i
-			for dotEnd < len(s) && s[dotEnd] == '.' {
-				dotEnd++
-			}
-			// Skip the dots entirely — look back to see if we need to insert "null"
-			// Find the last non-whitespace character before these dots
-			needNull := false
-			for j := out.Len() - 1; j >= 0; j-- {
-				ch := out.String()[j]
-				if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
-					continue
-				}
-				if ch == ':' {
-					needNull = true
-				}
-				break
-			}
-			if needNull {
-				out.WriteString("null")
-			}
-			// Skip any trailing whitespace after the dots too
-			i = dotEnd
-			continue
-		}
-
-		out.WriteByte(c)
-		i++
-	}
-
-	return out.String()
-}
+// --- Domain-specific sanitization (not JSON repair) ---
 
 // Valid enum values for sanitization.
 var (
@@ -536,12 +217,8 @@ func normalizeQualifiedName(qn string) string {
 		return qn
 	}
 
-	// Strip known prefixes: "src", repo-name-like segments (contain hyphens and "test" or "repo")
-	// Also strip segments that look like path components (lowercase, no dots)
-	// Strategy: keep only the last 2 segments (package::Name or package::Type.Method)
-	// unless there are exactly 1 or 2 segments already
+	// Keep only the last 2 segments: the package and the symbol
 	if len(cleaned) > 2 {
-		// Keep only the last 2 segments: the package and the symbol
 		cleaned = cleaned[len(cleaned)-2:]
 	}
 
@@ -550,7 +227,6 @@ func normalizeQualifiedName(qn string) string {
 
 // normalizeQualifiedNames normalizes all qualified_names in a Phase2Result.
 func normalizeQualifiedNames(result *Phase2Result) {
-	// Build a mapping from old to new names for updating references
 	nameMap := make(map[string]string)
 
 	for i := range result.Entities {
@@ -584,76 +260,7 @@ func normalizeQualifiedNames(result *Phase2Result) {
 	}
 }
 
-// RepairTruncatedJSON attempts to fix JSON that was cut off mid-stream by closing
-// any open strings, arrays, and objects. Returns the repaired string and true if
-// repair was attempted, or the original string and false if it looked complete.
-func RepairTruncatedJSON(s string) (string, bool) {
-	s = strings.TrimSpace(s)
-	if len(s) == 0 {
-		return s, false
-	}
-
-	// Check if JSON looks complete (ends with } or ])
-	lastChar := s[len(s)-1]
-	if lastChar == '}' || lastChar == ']' {
-		return s, false
-	}
-
-	// Walk the string to track state
-	inString := false
-	escaped := false
-	var stack []byte // tracks open { and [
-
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		if c == '\\' && inString {
-			escaped = true
-			continue
-		}
-		if c == '"' {
-			inString = !inString
-			continue
-		}
-		if inString {
-			continue
-		}
-		if c == '{' || c == '[' {
-			stack = append(stack, c)
-		} else if c == '}' || c == ']' {
-			if len(stack) > 0 {
-				stack = stack[:len(stack)-1]
-			}
-		}
-	}
-
-	if len(stack) == 0 && !inString {
-		return s, false // looks balanced
-	}
-
-	var repair strings.Builder
-	repair.WriteString(s)
-
-	// Close open string
-	if inString {
-		repair.WriteByte('"')
-	}
-
-	// Close open brackets in reverse order
-	for i := len(stack) - 1; i >= 0; i-- {
-		switch stack[i] {
-		case '{':
-			repair.WriteByte('}')
-		case '[':
-			repair.WriteByte(']')
-		}
-	}
-
-	return repair.String(), true
-}
+// --- Parse functions ---
 
 func ParsePhase2(raw string) (*Phase2Result, error) {
 	cleaned := CleanJSON(raw)
@@ -668,40 +275,6 @@ func ParsePhase2(raw string) (*Phase2Result, error) {
 	return &result, nil
 }
 
-// ParsePhase2WithRepair tries normal parsing first; if that fails, attempts to
-// repair truncated JSON before parsing. Returns the result and whether repair was used.
-func ParsePhase2WithRepair(raw string) (*Phase2Result, bool, error) {
-	cleaned := CleanJSON(raw)
-	var result Phase2Result
-	if err := json.Unmarshal([]byte(cleaned), &result); err == nil {
-		result.Entities = sanitizeEntities(result.Entities)
-		result.Facts = sanitizeFacts(result.Facts)
-		result.Relationships = sanitizeRelationships(result.Relationships)
-		normalizeQualifiedNames(&result)
-		return &result, false, nil
-	}
-
-	// Try repair
-	repaired, didRepair := RepairTruncatedJSON(cleaned)
-	if !didRepair {
-		// Couldn't repair — return original error
-		var origResult Phase2Result
-		err := json.Unmarshal([]byte(cleaned), &origResult)
-		return nil, false, err
-	}
-
-	// Strip trailing comma before closing brackets that repair may have created
-	repaired = trailingComma.ReplaceAllString(repaired, `$1`)
-
-	if err := json.Unmarshal([]byte(repaired), &result); err != nil {
-		return nil, true, err
-	}
-	result.Entities = sanitizeEntities(result.Entities)
-	result.Facts = sanitizeFacts(result.Facts)
-	result.Relationships = sanitizeRelationships(result.Relationships)
-	normalizeQualifiedNames(&result)
-	return &result, true, nil
-}
 
 func ParsePhase4(raw string) (*Phase4Result, error) {
 	cleaned := CleanJSON(raw)
@@ -711,7 +284,6 @@ func ParsePhase4(raw string) (*Phase4Result, error) {
 	}
 	result.Facts = sanitizeFacts(result.Facts)
 	result.Relationships = sanitizeRelationships(result.Relationships)
-	// Normalize entity references in Phase 4 results
 	for i := range result.Facts {
 		result.Facts[i].EntityName = normalizeQualifiedName(result.Facts[i].EntityName)
 	}

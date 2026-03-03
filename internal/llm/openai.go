@@ -34,7 +34,7 @@ func NewOpenAIClient(baseURL, apiKey string) *OpenAIClient {
 type chatRequest struct {
 	Model          string          `json:"model"`
 	Messages       []chatMessage   `json:"messages"`
-	MaxTokens      int             `json:"max_tokens"`
+	MaxTokens      int             `json:"max_tokens,omitempty"`
 	Stream         bool            `json:"stream"`
 	StreamOptions  *streamOptions  `json:"stream_options,omitempty"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`

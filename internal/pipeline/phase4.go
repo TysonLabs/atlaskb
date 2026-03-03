@@ -125,13 +125,10 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 
 	prompt := Phase4Prompt(cfg.RepoName, context)
 
-	// Use full remaining context window for output tokens
-	maxTokens := maxOutputTokens(ctxWin, len(systemPromptPhase4), len(prompt))
-
 	messages := []llm.Message{
 		{Role: "user", Content: prompt},
 	}
-	lastResp, attempts, err := callLLMWithRetry(ctx, cfg.LLM, cfg.Model, systemPromptPhase4, messages, maxTokens, SchemaPhase4, DefaultRetryConfig)
+	lastResp, attempts, err := callLLMWithRetry(ctx, cfg.LLM, cfg.Model, systemPromptPhase4, messages, 0, SchemaPhase4, DefaultRetryConfig)
 	if err != nil {
 		jobStore.Fail(ctx, claimed.ID, err.Error())
 		return fmt.Errorf("LLM call: %w", err)

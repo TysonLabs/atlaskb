@@ -36,9 +36,9 @@ type Phase2Config struct {
 // computeMaxContentBytes calculates the maximum file content size (in bytes) that
 // fits within the model's context window after reserving space for the output tokens
 // and the static prompt overhead.
-func computeMaxContentBytes(contextWindow, maxTokens, staticPromptBytes int) int {
+func computeMaxContentBytes(contextWindow, reservedOutputTokens, staticPromptBytes int) int {
 	staticTokens := staticPromptBytes / bytesPerToken
-	contentTokens := contextWindow - maxTokens - staticTokens
+	contentTokens := contextWindow - reservedOutputTokens - staticTokens
 	if contentTokens < 512 {
 		contentTokens = 512
 	}
@@ -62,18 +62,6 @@ func computeOutputBudget(symbolCount, contextWindow int) int {
 	return tokens
 }
 
-// maxOutputTokens computes the actual max_tokens for the LLM request by
-// subtracting the estimated input size from the context window. This ensures
-// we use the full context window rather than an arbitrary cap.
-func maxOutputTokens(contextWindow, systemPromptBytes, promptBytes int) int {
-	inputTokens := (systemPromptBytes + promptBytes) / bytesPerToken
-	safetyMargin := 256
-	tokens := contextWindow - inputTokens - safetyMargin
-	if tokens < 4096 {
-		tokens = 4096
-	}
-	return tokens
-}
 
 type Phase2Stats struct {
 	FilesProcessed  int
@@ -305,11 +293,8 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 
 	prompt := Phase2Prompt(job.Target, fi.Language, cfg.RepoName, cfg.Manifest.Stack, fileContent, cfg.Roster)
 
-	// Set max_tokens to use the full remaining context window
-	maxTokens := maxOutputTokens(contextWindow, len(systemPromptPhase2), len(prompt))
-
-	// Parse retry loop: retry on parse failures (no need to bump max_tokens since
-	// we already use the full context window)
+	// Parse retry loop: pass maxTokens=0 to let the inference server use the
+	// full remaining context window (it knows the exact input token count).
 	const maxParseAttempts = 3
 	var result *Phase2Result
 	var resp *llm.Response
@@ -318,33 +303,26 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 	for attempt := 1; attempt <= maxParseAttempts; attempt++ {
 		resp, attempts, err = callLLMWithRetry(ctx, cfg.LLM, cfg.Model, systemPromptPhase2, []llm.Message{
 			{Role: "user", Content: prompt},
-		}, maxTokens, SchemaPhase2, DefaultRetryConfig)
+		}, 0, SchemaPhase2, DefaultRetryConfig)
 		if err != nil {
 			return nil, fmt.Errorf("LLM call: %w", err)
 		}
 
-		// If the response was truncated (hit token limit), try to repair the JSON
-		truncated := resp.StopReason == "length"
-		if truncated {
-			var repaired bool
-			result, repaired, err = ParsePhase2WithRepair(resp.Content)
-			if err == nil {
-				if repaired {
-					log.Printf("[phase2] %s: repaired truncated JSON (stop_reason=length, %d output tokens)",
-						job.Target, resp.OutputTokens)
-				}
-				break
-			}
-		} else {
-			result, err = ParsePhase2(resp.Content)
-			if err == nil {
-				break
-			}
+		if resp.StopReason == "length" {
+			log.Printf("[phase2] %s: output truncated (stop_reason=length, %d tokens), attempting repair",
+				job.Target, resp.OutputTokens)
+		}
+
+		// CleanJSON uses jsonrepair which handles truncation, missing commas,
+		// unquoted keys, and other common LLM JSON failures.
+		result, err = ParsePhase2(resp.Content)
+		if err == nil {
+			break
 		}
 
 		if attempt < maxParseAttempts {
-			log.Printf("[phase2] %s: parse attempt %d/%d failed: %v, retrying with max_tokens=%d",
-				job.Target, attempt, maxParseAttempts, err, maxTokens)
+			log.Printf("[phase2] %s: parse attempt %d/%d failed: %v, retrying",
+				job.Target, attempt, maxParseAttempts, err)
 		}
 	}
 	if err != nil {

@@ -118,20 +118,13 @@ func RunPhase5(ctx context.Context, cfg Phase5Config) error {
 
 	prompt := Phase5Prompt(cfg.RepoName, entitySB.String(), archSB.String(), decSB.String())
 
-	// Use full remaining context window for output tokens
-	ctxWin := cfg.ContextWindow
-	if ctxWin <= 0 {
-		ctxWin = 32768
-	}
-	maxTokens := maxOutputTokens(ctxWin, len(systemPromptPhase5), len(prompt))
-
 	var result *Phase5Result
 	var lastResp *llm.Response
 	const maxRetries = 3
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		resp, err := cfg.LLM.Complete(ctx, cfg.Model, systemPromptPhase5, []llm.Message{
 			{Role: "user", Content: prompt},
-		}, maxTokens, SchemaPhase5)
+		}, 0, SchemaPhase5)
 		if err != nil {
 			if attempt == maxRetries {
 				jobStore.Fail(ctx, claimed.ID, err.Error())

@@ -458,10 +458,10 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 			fmt.Printf("  Warning: backfill failed: %v\n", err)
 		} else if backfillStats.OrphanEntities > 0 {
 			fmt.Printf("  Backfilled: %d facts, %d relationships for %d orphan entities\n",
-				backfillStats.FactsCreated, backfillStats.RelsCreated, backfillStats.OrphanEntities)
+				backfillStats.FactsCreated.Load(), backfillStats.RelsCreated.Load(), backfillStats.OrphanEntities)
 			indexingRun.OrphanEntities = models.Ptr(backfillStats.OrphanEntities)
-			indexingRun.BackfillFacts = models.Ptr(backfillStats.FactsCreated)
-			indexingRun.BackfillRels = models.Ptr(backfillStats.RelsCreated)
+			indexingRun.BackfillFacts = models.Ptr(int(backfillStats.FactsCreated.Load()))
+			indexingRun.BackfillRels = models.Ptr(int(backfillStats.RelsCreated.Load()))
 		} else {
 			fmt.Println("  No orphan entities found.")
 		}

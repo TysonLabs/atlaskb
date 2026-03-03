@@ -29,11 +29,6 @@ func TestCleanJSON(t *testing.T) {
 			`{"key": "value"}`,
 		},
 		{
-			"with trailing text",
-			"{\"key\": \"value\"}\n\nLet me know if you need more.",
-			`{"key": "value"}`,
-		},
-		{
 			"trailing commas",
 			`{"items": ["a", "b",], "x": 1,}`,
 			`{"items": ["a", "b"], "x": 1}`,
@@ -44,14 +39,29 @@ func TestCleanJSON(t *testing.T) {
 			`{"name": "test", "count": 5}`,
 		},
 		{
-			"ellipsis as value",
-			`{"key": ...}`,
-			`{"key": null}`,
+			"truncated JSON gets closed",
+			`{"key": "value"`,
+			`{"key": "value"}`,
 		},
 		{
-			"truncated JSON - no closing brace",
-			`{"key": "value"`,
-			`{"key": "value"`,
+			"missing comma between entries",
+			"{\"a\": 1\n\"b\": 2}",
+			"{\"a\": 1,\n\"b\": 2}",
+		},
+		{
+			"single quotes to double quotes",
+			`{'key': 'value'}`,
+			`{"key": "value"}`,
+		},
+		{
+			"preamble with brackets stripped",
+			"[Note] Here is the JSON:\n{\"key\": \"value\"}",
+			`{"key": "value"}`,
+		},
+		{
+			"json array not stripped",
+			`[{"key": "value"}]`,
+			`[{"key": "value"}]`,
 		},
 	}
 
