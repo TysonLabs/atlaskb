@@ -59,6 +59,7 @@ const (
 	RelTestedBy     = "tested_by"
 	RelConfiguredBy = "configured_by"
 	RelOwns         = "owns"
+	RelImports      = "imports"
 )
 
 // Relationship strengths
@@ -113,6 +114,8 @@ type Entity struct {
 	Assumptions   []string  `json:"assumptions,omitempty"`
 	Signature     *string   `json:"signature,omitempty"`
 	TypeRef       *string   `json:"typeref,omitempty"`
+	StartLine     *int      `json:"start_line,omitempty"`
+	EndLine       *int      `json:"end_line,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }

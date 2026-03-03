@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -268,14 +271,17 @@ type conventionItem struct {
 }
 
 type entitySummary struct {
-	Name         string   `json:"name"`
-	Kind         string   `json:"kind"`
-	Path         string   `json:"path,omitempty"`
-	Summary      string   `json:"summary,omitempty"`
-	Signature    string   `json:"signature,omitempty"`
-	Returns      string   `json:"returns,omitempty"`
-	Capabilities []string `json:"capabilities,omitempty"`
-	Assumptions  []string `json:"assumptions,omitempty"`
+	Name          string   `json:"name"`
+	QualifiedName string   `json:"qualified_name,omitempty"`
+	Kind          string   `json:"kind"`
+	Path          string   `json:"path,omitempty"`
+	Summary       string   `json:"summary,omitempty"`
+	Signature     string   `json:"signature,omitempty"`
+	Returns       string   `json:"returns,omitempty"`
+	StartLine     *int     `json:"start_line,omitempty"`
+	EndLine       *int     `json:"end_line,omitempty"`
+	Capabilities  []string `json:"capabilities,omitempty"`
+	Assumptions   []string `json:"assumptions,omitempty"`
 }
 
 type factItem struct {
@@ -355,17 +361,27 @@ type decisionContextResponse struct {
 	Decisions []decisionItem `json:"decisions"`
 }
 
+type relatedFileHint struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
 type taskModuleContext struct {
-	Path      string                   `json:"path"`
-	Context   *moduleContextResponse   `json:"context,omitempty"`
-	Contract  *serviceContractResponse `json:"contract,omitempty"`
-	Decisions []decisionItem           `json:"decisions,omitempty"`
-	Errors    []string                 `json:"errors,omitempty"`
+	Path         string                   `json:"path"`
+	Entities     []entitySummary          `json:"entities,omitempty"`
+	Imports      []string                 `json:"imports,omitempty"`
+	RelatedFiles []relatedFileHint        `json:"related_files,omitempty"`
+	Context      *moduleContextResponse   `json:"context,omitempty"`
+	Contract     *serviceContractResponse `json:"contract,omitempty"`
+	Decisions    []decisionItem           `json:"decisions,omitempty"`
+	Errors       []string                 `json:"errors,omitempty"`
 }
 
 type stalenessInfo struct {
 	LastIndexedAt *time.Time `json:"last_indexed_at,omitempty"`
 	IndexedCommit *string    `json:"indexed_commit,omitempty"`
+	HeadCommit    *string    `json:"head_commit,omitempty"`
+	CommitsBehind *int       `json:"commits_behind,omitempty"`
 }
 
 type taskContextResponse struct {
@@ -1006,9 +1022,13 @@ func (s *Server) handleGetTaskContext(ctx context.Context, req *gomcp.CallToolRe
 
 	limit := clampMaxResults(args.MaxResults, 50, 200)
 
-	// Fetch conventions once for the repo
+	// Fetch conventions once for the repo (capped at 20 for soldiers)
 	factStore := &models.FactStore{Pool: s.pool}
-	convFacts, err := factStore.ListByRepoAndCategory(ctx, repo.ID, []string{models.CategoryConvention, models.CategoryPattern}, limit)
+	convLimit := limit
+	if convLimit > 20 {
+		convLimit = 20
+	}
+	convFacts, err := factStore.ListByRepoAndCategory(ctx, repo.ID, []string{models.CategoryConvention, models.CategoryPattern}, convLimit)
 	if err != nil {
 		return errorResult(fmt.Sprintf("listing conventions: %v", err)), nil, nil
 	}
@@ -1039,6 +1059,7 @@ func (s *Server) handleGetTaskContext(ctx context.Context, req *gomcp.CallToolRe
 	}
 
 	// Fetch per-file context
+	entityStore := &models.EntityStore{Pool: s.pool}
 	repoStore := &models.RepoStore{Pool: s.pool}
 	relStore := &models.RelationshipStore{Pool: s.pool}
 	decisionStore := &models.DecisionStore{Pool: s.pool}
@@ -1047,11 +1068,103 @@ func (s *Server) handleGetTaskContext(ctx context.Context, req *gomcp.CallToolRe
 	for _, filePath := range args.Files {
 		mc := taskModuleContext{Path: filePath}
 
-		entity, err := s.resolveEntity(ctx, repo.ID, filePath)
-		if err != nil {
-			mc.Errors = append(mc.Errors, fmt.Sprintf("resolving entity: %v", err))
+		entity, resolveErr := s.resolveEntity(ctx, repo.ID, filePath)
+
+		// List all entities in this file (table of contents for the soldier)
+		// This works even when resolveEntity fails — ListByPath checks the path column directly
+		fileEntities, _ := entityStore.ListByPath(ctx, repo.ID, filePath)
+		if len(fileEntities) == 0 {
+			// Suffix fallback: handles cases where indexed path has different prefix
+			fileEntities, _ = entityStore.ListByPathSuffix(ctx, repo.ID, filePath)
+		}
+		if len(fileEntities) == 0 && entity != nil && entity.Path != nil && *entity.Path != filePath {
+			fileEntities, _ = entityStore.ListByPath(ctx, repo.ID, *entity.Path)
+		}
+
+		// If resolveEntity failed but we found file entities, use the first as primary
+		if resolveErr != nil && len(fileEntities) > 0 {
+			entity = &fileEntities[0]
+			resolveErr = nil
+		}
+
+		if resolveErr != nil {
+			mc.Errors = append(mc.Errors, fmt.Sprintf("resolving entity: %v", resolveErr))
 			modules = append(modules, mc)
 			continue
+		}
+		if len(fileEntities) > 0 {
+			mc.Entities = make([]entitySummary, 0, len(fileEntities))
+			for i := range fileEntities {
+				mc.Entities = append(mc.Entities, toEntitySummary(&fileEntities[i]))
+			}
+
+			// Collect imports and related files from relationships on file entities
+			fileEntityIDs := make([]uuid.UUID, 0, len(fileEntities))
+			for _, fe := range fileEntities {
+				fileEntityIDs = append(fileEntityIDs, fe.ID)
+			}
+			fileEntityIDSet := make(map[uuid.UUID]bool, len(fileEntityIDs))
+			for _, id := range fileEntityIDs {
+				fileEntityIDSet[id] = true
+			}
+
+			importSet := make(map[string]bool)
+			relatedMap := make(map[string]string) // path -> reason
+			for _, feID := range fileEntityIDs {
+				rels, err := relStore.ListByEntityLimited(ctx, feID, 50)
+				if err != nil {
+					continue
+				}
+				for _, r := range rels {
+					otherID := r.ToEntityID
+					direction := "outgoing"
+					if r.FromEntityID != feID {
+						otherID = r.FromEntityID
+						direction = "incoming"
+					}
+
+					// Collect imports
+					if r.Kind == "imports" && direction == "outgoing" {
+						other, _ := entityStore.GetByID(ctx, otherID)
+						if other != nil {
+							importSet[other.QualifiedName] = true
+						}
+						continue
+					}
+
+					// Collect related files (skip entities in same file)
+					if !fileEntityIDSet[otherID] {
+						other, _ := entityStore.GetByID(ctx, otherID)
+						if other != nil && other.Path != nil && *other.Path != filePath {
+							reason := r.Kind
+							if direction == "incoming" {
+								reason = "depended on by " + other.Name
+							} else {
+								reason = "depends on " + other.Name
+							}
+							if _, exists := relatedMap[*other.Path]; !exists {
+								relatedMap[*other.Path] = reason
+							}
+						}
+					}
+				}
+			}
+
+			if len(importSet) > 0 {
+				mc.Imports = make([]string, 0, len(importSet))
+				for imp := range importSet {
+					mc.Imports = append(mc.Imports, imp)
+				}
+			}
+			if len(relatedMap) > 0 {
+				mc.RelatedFiles = make([]relatedFileHint, 0, len(relatedMap))
+				for path, reason := range relatedMap {
+					mc.RelatedFiles = append(mc.RelatedFiles, relatedFileHint{
+						Path:   path,
+						Reason: reason,
+					})
+				}
+			}
 		}
 
 		// Module context
@@ -1188,14 +1301,35 @@ func (s *Server) handleGetTaskContext(ctx context.Context, req *gomcp.CallToolRe
 		modules = append(modules, mc)
 	}
 
+	staleness := stalenessInfo{
+		LastIndexedAt: repo.LastIndexedAt,
+		IndexedCommit: repo.LastCommitSHA,
+	}
+
+	// Try to compute commit distance from git if repo path is accessible
+	if repo.LocalPath != "" && repo.LastCommitSHA != nil {
+		if headOut, err := exec.CommandContext(ctx, "git", "-C", repo.LocalPath, "rev-parse", "HEAD").Output(); err == nil {
+			head := strings.TrimSpace(string(headOut))
+			staleness.HeadCommit = &head
+			if head != *repo.LastCommitSHA {
+				countCmd := exec.CommandContext(ctx, "git", "-C", repo.LocalPath, "rev-list", "--count", *repo.LastCommitSHA+"..HEAD")
+				if countOut, err := countCmd.Output(); err == nil {
+					if n, err := strconv.Atoi(strings.TrimSpace(string(countOut))); err == nil {
+						staleness.CommitsBehind = &n
+					}
+				}
+			} else {
+				zero := 0
+				staleness.CommitsBehind = &zero
+			}
+		}
+	}
+
 	resp := taskContextResponse{
 		Repo:        repo.Name,
 		Conventions: conventions,
 		Modules:     modules,
-		Staleness: stalenessInfo{
-			LastIndexedAt: repo.LastIndexedAt,
-			IndexedCommit: repo.LastCommitSHA,
-		},
+		Staleness:   staleness,
 	}
 
 	return jsonResult(resp), nil, nil
@@ -1217,14 +1351,17 @@ func toEntitySummary(e *models.Entity) entitySummary {
 		returns = *e.TypeRef
 	}
 	return entitySummary{
-		Name:         e.Name,
-		Kind:         e.Kind,
-		Path:         entityPath(e),
-		Summary:      summary,
-		Signature:    sig,
-		Returns:      returns,
-		Capabilities: e.Capabilities,
-		Assumptions:  e.Assumptions,
+		Name:          e.Name,
+		QualifiedName: e.QualifiedName,
+		Kind:          e.Kind,
+		Path:          entityPath(e),
+		Summary:       summary,
+		Signature:     sig,
+		Returns:       returns,
+		StartLine:     e.StartLine,
+		EndLine:       e.EndLine,
+		Capabilities:  e.Capabilities,
+		Assumptions:   e.Assumptions,
 	}
 }
 

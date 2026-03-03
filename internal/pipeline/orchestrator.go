@@ -319,6 +319,20 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		}
 	}
 
+	// Phase 1.6: Import parsing (deterministic, no LLM)
+	if len(entityRoster) > 0 && manifest != nil {
+		goFiles := filterGoFiles(manifest.Files)
+		if len(goFiles) > 0 {
+			imports := ExtractGoImports(cfg.RepoPath, goFiles)
+			if len(imports) > 0 {
+				created := StoreImportRelationships(ctx, cfg.Pool, repo.ID, repoName, imports, entityRoster)
+				if created > 0 {
+					fmt.Printf("  Parsed %d import relationships from %d Go files\n", created, len(goFiles))
+				}
+			}
+		}
+	}
+
 	if cfg.DryRun {
 		fmt.Println("Dry run — stopping before LLM calls.")
 		return result, nil

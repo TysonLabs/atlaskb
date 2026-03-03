@@ -1,0 +1,2 @@
+ALTER TABLE entities DROP COLUMN IF EXISTS end_line;
+ALTER TABLE entities DROP COLUMN IF EXISTS start_line;

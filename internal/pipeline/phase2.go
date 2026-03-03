@@ -431,9 +431,10 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 		logVerboseF("[phase2] %s: entity %q → INSERT (no existing match)", job.Target, ext.QualifiedName)
 	}
 
-	// Populate entity signatures from ctags roster
+	// Populate entity signatures and line numbers from ctags roster
+	endLines := ComputeEndLines(cfg.Roster)
 	for _, re := range cfg.Roster {
-		if re.Path != job.Target || re.Signature == "" {
+		if re.Path != job.Target {
 			continue
 		}
 		eid, ok := entityMap[re.QualifiedName]
@@ -444,11 +445,22 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 		if err != nil || e == nil {
 			continue
 		}
-		if e.Signature == nil || *e.Signature == "" {
+		changed := false
+		if re.Signature != "" && (e.Signature == nil || *e.Signature == "") {
 			e.Signature = models.Ptr(re.Signature)
 			if re.TypeRef != "" {
 				e.TypeRef = models.Ptr(re.TypeRef)
 			}
+			changed = true
+		}
+		if e.StartLine == nil && re.Line > 0 {
+			e.StartLine = models.Ptr(re.Line)
+			if endLine, ok := endLines[re.QualifiedName]; ok {
+				e.EndLine = models.Ptr(endLine)
+			}
+			changed = true
+		}
+		if changed {
 			entityStore.Update(ctx, e)
 		}
 	}
@@ -459,6 +471,30 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 	} else {
 		log.Printf("[phase2] %s: extracted %d entities, %d facts, %d relationships",
 			job.Target, len(result.Entities), len(result.Facts), len(result.Relationships))
+	}
+
+	// Stale entity cleanup: remove entities no longer present after LLM re-analysis
+	existingEntities, _ := entityStore.ListByPath(ctx, cfg.RepoID, job.Target)
+	if len(existingEntities) > 0 {
+		newQNames := make(map[string]bool)
+		for _, ext := range result.Entities {
+			newQNames[ext.QualifiedName] = true
+		}
+		// Also keep entities that are in the ctags roster for this file
+		for _, re := range cfg.Roster {
+			if re.Path == job.Target {
+				newQNames[re.QualifiedName] = true
+			}
+		}
+		for _, old := range existingEntities {
+			if !newQNames[old.QualifiedName] {
+				if err := entityStore.Delete(ctx, old.ID); err != nil {
+					logVerboseF("[phase2] warn: deleting stale entity %s: %v", old.QualifiedName, err)
+				} else {
+					logVerboseF("[phase2] %s: removed stale entity %q", job.Target, old.QualifiedName)
+				}
+			}
+		}
 	}
 
 	// Store file summary as a fact on the first entity in this file

@@ -204,6 +204,18 @@ func BuildEntityRoster(symbols map[string][]CtagsSymbol) []EntityEntry {
 	return roster
 }
 
+// ComputeEndLines estimates the end line for each entity in the roster by using
+// the next entity's start line in the same file. The roster must be sorted by (Path, Line).
+func ComputeEndLines(roster []EntityEntry) map[string]int {
+	endLines := make(map[string]int)
+	for i := 0; i < len(roster); i++ {
+		if i+1 < len(roster) && roster[i].Path == roster[i+1].Path {
+			endLines[roster[i].QualifiedName] = roster[i+1].Line - 1
+		}
+	}
+	return endLines
+}
+
 // buildQualifiedName creates a canonical qualified name from a ctags symbol.
 // Convention: <module>::<Name> for top-level symbols, <module>::<Owner>.<Method> for methods.
 //
