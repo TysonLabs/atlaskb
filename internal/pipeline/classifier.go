@@ -117,6 +117,7 @@ var vendorDirs = map[string]bool{
 	"vendor":       true,
 	"node_modules": true,
 	"third_party":  true,
+	"plugins":      true,
 	".next":        true,
 	"dist":         true,
 	"build":        true,

@@ -24,11 +24,11 @@ func TestRunPhase1_MinimalGoProject(t *testing.T) {
 		t.Fatalf("RunPhase1() error = %v", err)
 	}
 
-	if manifest.Stats.TotalFiles != 5 {
-		t.Errorf("TotalFiles = %d, want 5", manifest.Stats.TotalFiles)
+	if manifest.Stats.TotalFiles != 4 {
+		t.Errorf("TotalFiles = %d, want 4", manifest.Stats.TotalFiles)
 	}
-	if manifest.Stats.AnalyzableFiles != 5 {
-		t.Errorf("AnalyzableFiles = %d, want 5", manifest.Stats.AnalyzableFiles)
+	if manifest.Stats.AnalyzableFiles != 4 {
+		t.Errorf("AnalyzableFiles = %d, want 4", manifest.Stats.AnalyzableFiles)
 	}
 
 	// Stack detection

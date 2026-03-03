@@ -74,13 +74,14 @@ RULES:
 }
 
 type BackfillConfig struct {
-	RepoID      uuid.UUID
-	RepoName    string
-	RepoPath    string
-	Model       string
-	Concurrency int
-	Pool        *pgxpool.Pool
-	LLM         llm.Client
+	RepoID        uuid.UUID
+	RepoName      string
+	RepoPath      string
+	Model         string
+	Concurrency   int
+	Pool          *pgxpool.Pool
+	LLM           llm.Client
+	ContextWindow int // Model context window in tokens (0 = use default 32768)
 }
 
 type BackfillStats struct {
@@ -146,11 +147,27 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 				entityIDMap[e.QualifiedName] = e.ID
 			}
 
-			prompt := backfillPrompt(w.path, fi.Language, string(content), names)
+			// Dynamic max_tokens based on orphan entity count
+			maxTokens := computeMaxTokens(len(names))
+
+			// Truncate content if it would overflow the context window
+			ctxWin := cfg.ContextWindow
+			if ctxWin <= 0 {
+				ctxWin = 32768
+			}
+			fileContent := string(content)
+			staticPrompt := backfillPrompt(w.path, fi.Language, "", names)
+			maxContentBytes := computeMaxContentBytes(ctxWin, maxTokens, len(systemPromptBackfill)+len(staticPrompt))
+			if len(fileContent) > maxContentBytes {
+				log.Printf("[backfill] %s: truncating content from %d to %d bytes", w.path, len(fileContent), maxContentBytes)
+				fileContent = fileContent[:maxContentBytes]
+			}
+
+			prompt := backfillPrompt(w.path, fi.Language, fileContent, names)
 
 			resp, _, err := callLLMWithRetry(gctx, cfg.LLM, cfg.Model, systemPromptBackfill, []llm.Message{
 				{Role: "user", Content: prompt},
-			}, 4096, SchemaPhase2, DefaultRetryConfig)
+			}, maxTokens, SchemaPhase2, DefaultRetryConfig)
 			if err != nil {
 				logVerboseF("[backfill] %s: LLM error: %v", w.path, err)
 				return nil
@@ -334,11 +351,27 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 					entityIDMap[e.QualifiedName] = e.ID
 				}
 
-				prompt := backfillPrompt(w.path, fi.Language, string(content), names)
+				// Dynamic max_tokens based on orphan entity count
+				maxTokens := computeMaxTokens(len(names))
+
+				// Truncate content if it would overflow the context window
+				ctxWin := cfg.ContextWindow
+				if ctxWin <= 0 {
+					ctxWin = 32768
+				}
+				fileContent := string(content)
+				staticPrompt := backfillPrompt(w.path, fi.Language, "", names)
+				maxContentBytes := computeMaxContentBytes(ctxWin, maxTokens, len(systemPromptBackfill)+len(staticPrompt))
+				if len(fileContent) > maxContentBytes {
+					log.Printf("[backfill-rel] %s: truncating content from %d to %d bytes", w.path, len(fileContent), maxContentBytes)
+					fileContent = fileContent[:maxContentBytes]
+				}
+
+				prompt := backfillPrompt(w.path, fi.Language, fileContent, names)
 
 				resp, _, err := callLLMWithRetry(gctx2, cfg.LLM, cfg.Model, systemPromptBackfill, []llm.Message{
 					{Role: "user", Content: prompt},
-				}, 4096, SchemaPhase2, DefaultRetryConfig)
+				}, maxTokens, SchemaPhase2, DefaultRetryConfig)
 				if err != nil {
 					return nil
 				}

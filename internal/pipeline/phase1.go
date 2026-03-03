@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -52,48 +53,43 @@ func RunPhase1(repoPath string, excludeDirs ...[]string) (*Manifest, error) {
 		},
 	}
 
-	err = filepath.WalkDir(absPath, func(path string, d fs.DirEntry, err error) error {
+	// Try git ls-files first (respects .gitignore), fall back to WalkDir
+	filePaths, gitErr := gitLsFiles(absPath)
+	if gitErr != nil {
+		// Not a git repo or git not available — fall back to WalkDir
+		filePaths, err = walkDirFiles(absPath, excluded)
 		if err != nil {
-			return nil // skip files we can't read
+			return nil, fmt.Errorf("walking directory: %w", err)
 		}
+	}
 
-		// Skip .git directory
-		if d.IsDir() {
-			base := filepath.Base(path)
-			if base == ".git" || base == ".idea" || base == ".vscode" {
-				return filepath.SkipDir
-			}
-			// Skip vendored directories early
-			if vendorDirs[strings.ToLower(base)] {
-				return filepath.SkipDir
-			}
-			// Skip user-configured exclude dirs
-			if len(excluded) > 0 {
-				relDir, relErr := filepath.Rel(absPath, path)
-				if relErr == nil {
-					for _, ex := range excluded {
-						if relDir == ex || strings.HasPrefix(relDir, ex+"/") {
-							return filepath.SkipDir
-						}
-					}
-				}
-			}
-			return nil
-		}
-
-		relPath, err := filepath.Rel(absPath, path)
-		if err != nil {
-			return nil
+	for _, relPath := range filePaths {
+		// Apply exclude dirs filter
+		if matchesExcludeDir(relPath, excluded) {
+			continue
 		}
 
 		// Skip test files by naming convention
 		if isTestFile(relPath) {
-			return nil
+			continue
 		}
 
-		info, err := d.Info()
-		if err != nil {
-			return nil
+		// Skip vendored directories
+		parts := strings.Split(relPath, "/")
+		isVendored := false
+		for _, p := range parts {
+			if vendorDirs[strings.ToLower(p)] {
+				isVendored = true
+				break
+			}
+		}
+		if isVendored {
+			continue
+		}
+
+		info, statErr := os.Stat(filepath.Join(absPath, relPath))
+		if statErr != nil {
+			continue
 		}
 
 		fi := ClassifyFile(relPath, info.Size())
@@ -108,11 +104,6 @@ func RunPhase1(repoPath string, excludeDirs ...[]string) (*Manifest, error) {
 		if ShouldAnalyze(fi) {
 			manifest.Stats.AnalyzableFiles++
 		}
-
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("walking directory: %w", err)
 	}
 
 	manifest.Stack = detectStack(manifest)
@@ -205,4 +196,73 @@ func appendUnique(slice []string, val string) []string {
 		}
 	}
 	return append(slice, val)
+}
+
+// gitLsFiles returns all tracked files in a git repo using `git ls-files`.
+// This respects .gitignore and only returns files git knows about.
+func gitLsFiles(repoPath string) ([]string, error) {
+	cmd := exec.Command("git", "ls-files", "--cached", "--others", "--exclude-standard")
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var files []string
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		files = append(files, line)
+	}
+	return files, nil
+}
+
+// walkDirFiles is the fallback for non-git repos. Uses filepath.WalkDir
+// with hardcoded directory exclusions.
+func walkDirFiles(absPath string, excluded []string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(absPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			base := filepath.Base(path)
+			if base == ".git" || base == ".idea" || base == ".vscode" || base == ".myrmex" {
+				return filepath.SkipDir
+			}
+			if vendorDirs[strings.ToLower(base)] {
+				return filepath.SkipDir
+			}
+			if matchesExcludeDir(mustRel(absPath, path), excluded) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		relPath, relErr := filepath.Rel(absPath, path)
+		if relErr != nil {
+			return nil
+		}
+		files = append(files, relPath)
+		return nil
+	})
+	return files, err
+}
+
+func matchesExcludeDir(relPath string, excluded []string) bool {
+	for _, ex := range excluded {
+		if relPath == ex || strings.HasPrefix(relPath, ex+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func mustRel(base, path string) string {
+	rel, err := filepath.Rel(base, path)
+	if err != nil {
+		return path
+	}
+	return rel
 }

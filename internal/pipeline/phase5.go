@@ -70,7 +70,9 @@ func RunPhase5(ctx context.Context, cfg Phase5Config) error {
 		}
 		coreEntities = append(coreEntities, e)
 	}
+	// Sort entities by richness (fact + relationship count) so the cap keeps the most valuable ones
 	if len(coreEntities) > 60 {
+		coreEntities = sortEntitiesByRichness(ctx, coreEntities, factStore, &models.RelationshipStore{Pool: cfg.Pool})
 		coreEntities = coreEntities[:60]
 	}
 

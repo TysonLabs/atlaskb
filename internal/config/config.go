@@ -77,6 +77,7 @@ type PipelineConfig struct {
 	SynthesisModel    string   `toml:"synthesis_model"`
 	ContextWindow     int      `toml:"context_window"`
 	GlobalExcludeDirs []string `toml:"global_exclude_dirs"`
+	GitLogLimit       int      `toml:"git_log_limit"`
 }
 
 func DefaultConfig() Config {
@@ -101,6 +102,7 @@ func DefaultConfig() Config {
 			ExtractionModel: "qwen/qwen3.5-35b-a3b",
 			SynthesisModel:  "qwen/qwen3.5-35b-a3b",
 			ContextWindow:   32768,
+			GitLogLimit:     500,
 			GlobalExcludeDirs: []string{
 				"tests", "test", "__tests__", "spec",
 				"testing", "testdata", "fixtures",

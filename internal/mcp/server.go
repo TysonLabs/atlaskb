@@ -110,6 +110,8 @@ func (s *Server) resolveRepo(ctx context.Context, name string) (*models.Repo, er
 
 func (s *Server) resolveEntity(ctx context.Context, repoID uuid.UUID, path string) (*models.Entity, error) {
 	entityStore := &models.EntityStore{Pool: s.pool}
+
+	// 1. Exact path match
 	e, err := entityStore.FindByPath(ctx, repoID, path)
 	if err != nil {
 		return nil, err
@@ -117,6 +119,8 @@ func (s *Server) resolveEntity(ctx context.Context, repoID uuid.UUID, path strin
 	if e != nil {
 		return e, nil
 	}
+
+	// 2. Exact qualified_name match
 	e, err = entityStore.FindByQualifiedName(ctx, repoID, path)
 	if err != nil {
 		return nil, err
@@ -124,6 +128,16 @@ func (s *Server) resolveEntity(ctx context.Context, repoID uuid.UUID, path strin
 	if e != nil {
 		return e, nil
 	}
+
+	// 3. Suffix-based path fallback (handles worktree paths, partial paths)
+	e, err = entityStore.FindByPathSuffix(ctx, repoID, path)
+	if err != nil {
+		return nil, err
+	}
+	if e != nil {
+		return e, nil
+	}
+
 	return nil, fmt.Errorf("entity %q not found", path)
 }
 

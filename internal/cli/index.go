@@ -1,7 +1,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tgeorge06/atlaskb/internal/embeddings"
@@ -35,12 +40,83 @@ func init() {
 	rootCmd.AddCommand(indexCmd)
 }
 
+// preflightCheck verifies that the LLM and embedding services are reachable
+// before starting any indexing work.
+func preflightCheck(ctx context.Context, llmURL, embedURL, embedModel string, phases []string) error {
+	needsLLM := len(phases) == 0
+	needsEmbed := len(phases) == 0
+	for _, p := range phases {
+		switch p {
+		case "phase2", "phase3", "phase4", "phase5":
+			needsLLM = true
+		case "embedding":
+			needsEmbed = true
+		}
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	if needsLLM {
+		fmt.Printf("  Checking LLM service (%s)... ", llmURL)
+		req, err := http.NewRequestWithContext(ctx, "GET", llmURL+"/v1/models", nil)
+		if err != nil {
+			return fmt.Errorf("llm: %w", err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Println("FAIL")
+			return fmt.Errorf("LLM service unreachable at %s: %w", llmURL, err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			fmt.Println("FAIL")
+			return fmt.Errorf("LLM service returned %s at %s/v1/models", resp.Status, llmURL)
+		}
+		fmt.Println("OK")
+	}
+
+	if needsEmbed {
+		fmt.Printf("  Checking embedding service (%s)... ", embedURL)
+		payload := fmt.Sprintf(`{"input":["preflight"],"model":%q}`, embedModel)
+		req, err := http.NewRequestWithContext(ctx, "POST", embedURL+"/v1/embeddings",
+			strings.NewReader(payload))
+		if err != nil {
+			return fmt.Errorf("embeddings: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Println("FAIL")
+			return fmt.Errorf("embedding service unreachable at %s: %w", embedURL, err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			fmt.Println("FAIL")
+			return fmt.Errorf("embedding service returned %s at %s/v1/embeddings", resp.Status, embedURL)
+		}
+		fmt.Println("OK")
+	}
+
+	return nil
+}
+
 func runIndex(cmd *cobra.Command, args []string) error {
 	repoPath := args[0]
 
 	concurrency := cfg.Pipeline.Concurrency
 	if indexConcurrency > 0 {
 		concurrency = indexConcurrency
+	}
+
+	// Preflight: verify LLM and embedding services are reachable
+	if !indexDryRun {
+		fmt.Println("Preflight checks:")
+		if err := preflightCheck(cmd.Context(), cfg.LLM.BaseURL, cfg.Embeddings.BaseURL, cfg.Embeddings.Model, indexPhases); err != nil {
+			return fmt.Errorf("preflight failed: %w", err)
+		}
+		fmt.Println()
 	}
 
 	llmClient := llm.NewOpenAIClient(cfg.LLM.BaseURL, cfg.LLM.APIKey)
@@ -62,6 +138,7 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		LLM:               llmClient,
 		Embedder:          embedClient,
 		Verbose:           verbose,
+		GitLogLimit:       cfg.Pipeline.GitLogLimit,
 		Phases:            indexPhases,
 		GlobalExcludeDirs: cfg.Pipeline.GlobalExcludeDirs,
 		GitHubClient:      ghClient,

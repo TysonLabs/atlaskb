@@ -207,6 +207,13 @@ func RunPhase3(ctx context.Context, cfg Phase3Config) error {
 		totalTokens += lastResp.InputTokens + lastResp.OutputTokens
 		totalCostUSD += float64(lastResp.InputTokens)/1_000_000*SonnetInputPer1M + float64(lastResp.OutputTokens)/1_000_000*SonnetOutputPer1M
 
+		// Build batch PR ref string (e.g., "PR #12, #15, #23")
+		var prNums []string
+		for _, pr := range batch {
+			prNums = append(prNums, fmt.Sprintf("#%d", pr.Number))
+		}
+		batchRef := "PR " + strings.Join(prNums, ", ")
+
 		// Store facts with PR provenance
 		for _, ef := range result.Facts {
 			entityID, found := resolveEntity(ctx, entityStore, cfg.RepoID, ef.EntityName)
@@ -236,7 +243,7 @@ func RunPhase3(ctx context.Context, cfg Phase3Config) error {
 				Provenance: []models.Provenance{{
 					SourceType: "pr",
 					Repo:       cfg.RepoName,
-					Ref:        "github-prs",
+					Ref:        batchRef,
 				}},
 			}
 			if err := factStore.Create(ctx, fact); err != nil {

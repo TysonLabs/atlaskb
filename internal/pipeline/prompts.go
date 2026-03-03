@@ -57,25 +57,40 @@ Respond with JSON in this exact schema:
 }
 
 ENTITY RULES:
-- Only create entities for EXPORTED/PUBLIC symbols. In Go, exported = starts with
-  uppercase letter. DO NOT create entities for unexported (lowercase) functions,
-  methods, constants, variables, or struct fields. Examples of what NOT to extract:
-  processLoop, dispatch, cleanup, generateID, eventPath, readEvent, calculateDelay,
-  worker, matchingHandlers, executeWithRetry, drainChannel, validateTopic.
-  These should be described as facts on their parent type, not as separate entities.
-- DO NOT create entities for individual method signatures inside an interface definition.
-  The interface itself is the entity — list its methods as capabilities on the interface entity
-  and add a fact for each method describing its contract.
-- Extract ALL exported methods on a CONCRETE type (struct), even simple pass-through/delegation methods.
-  A method like ` + "`func (s *FooService) GetByID(ctx, id) { return s.store.GetByID(ctx, id) }`" + `
-  IS an entity — it's part of the public API surface.
-- DO NOT create entities for variables declared in function bodies (e.g. local vars like
-  store, bus, svc, handler, server, logger in main() or init()). Only create entities for
-  package-level type declarations, exported functions, and type methods.
+- Extract entities for all meaningful symbols: types, functions, methods, traits, enums, constants.
+  The goal is comprehensive indexing — do NOT skip entities because they seem simple.
+- DO NOT create entities for variables declared in function bodies (local vars).
+  Only create entities for module/package-level declarations and type methods.
 - In a main.go or entry-point file, the only entity should be "main" itself. Express
   the wiring and configuration as facts on the main entity, not as separate entities.
 - Use exact names from the source code. Never paraphrase or rename functions.
-- Express implementation details as facts on the parent entity.
+- Express implementation details of unexported/private helpers as facts on their parent entity.
+
+## LANGUAGE-SPECIFIC ENTITY RULES:
+
+**Go:**
+- Only create entities for EXPORTED symbols (uppercase letter). Unexported functions
+  become facts on their parent type.
+- DO NOT create entities for Go interface method signatures — the interface itself is the
+  entity. List methods as capabilities and add a fact per method.
+- Extract ALL exported methods on concrete types (structs).
+
+**Rust:**
+- Create entities for ALL pub/pub(crate) items: structs, enums, traits, functions, and
+  their impl methods.
+- Rust traits are CONCRETE entities — extract EACH trait method as a separate entity,
+  not just as capabilities. Traits define contracts AND can have default implementations.
+- Extract ALL impl methods as separate entities (e.g. "db::Rows.first_header_signature").
+- For enum variants with behavior, extract the enum as the entity and variants as facts.
+
+**Python:**
+- Create entities for classes, functions, and class methods.
+- Dunder methods (__init__, __str__, etc.) should be facts on the class, not separate entities.
+- Private methods (_method) should be facts on their class.
+
+**TypeScript/JavaScript:**
+- Create entities for exported classes, functions, and class methods.
+- Internal/unexported functions should be facts on their module or parent class.
 
 ## qualified_name FORMAT (CRITICAL — follow EXACTLY):
 Separator rules: "::" between package/module and name, "." between type and method.
@@ -86,6 +101,13 @@ NEVER include the repo name, file path, or "src" as a prefix.
   - Method on type:          "package::Type.Method" → e.g. "storage::MemoryStorage.Save"
   - DO NOT: "atlaskb-test-repo::storage::MemoryStorage", "src::storage::MemoryStorage"
   - DO NOT: "storage/MemoryStorage", "storage.MemoryStorage" (for types — use :: not . or /)
+
+**Rust:**
+  - Module-level type/func:  "module::Name"         → e.g. "db::Header", "db::validate_query_for_execution"
+  - Impl method:             "module::Type.Method"   → e.g. "db::Rows.first_header_signature"
+  - Trait method:            "module::Trait.method"   → e.g. "db::Database.init", "db::Database.start_query"
+  - Enum:                    "module::Enum"           → e.g. "db::DbTaskResult"
+  - DO NOT: "src::db::Header", "lazydb::db::Header"
 
 **Python:**
   - Module-level class/func: "module::Name"          → e.g. "validators::EmailValidator", "auth::authenticate"
@@ -252,11 +274,12 @@ Perfect extraction:
 
 Note: sanitizeInput-style unexported functions are NOT entities — they're mentioned as facts on their parent. reconcile and shutdown are unexported so they become facts on Manager and Manager.Run, not separate entities. The example shows 4-5 facts per entity including timing ("when"), lifecycle patterns, numeric constants (httpTimeout=30s, reconcileInterval=10min, maxRetries=3), and a TODO as tech debt.
 
-CRITICAL: Each entity MUST have at least 4 facts AND at least 1 relationship.
-- Simple entities (pass-through methods, constructors): 4 facts minimum
-- Complex entities (services, workers, main functions, orchestrators): 6-10 facts
-- If you cannot think of 4 facts for an entity, you should not create the entity.
-- Count your facts and relationships before finalizing.
+FACT QUANTITY GUIDANCE:
+- Simple entities (getters, constructors, trait methods): 1-3 facts is fine
+- Standard entities (functions, methods): 3-6 facts
+- Complex entities (services, workers, orchestrators, main functions): 6-10 facts
+- NEVER skip an entity because it has few facts — index it anyway with whatever facts are relevant.
+  Even a single fact ("what it does") is valuable for search and dependency tracking.
 
 RELATIONSHIP RULES — EVERY entity MUST have at least 1 relationship:
 - METHODS: Always emit "owns" from the struct type to each method entity. This is the easiest

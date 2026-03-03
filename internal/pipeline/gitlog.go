@@ -15,12 +15,13 @@ import (
 )
 
 type GitLogConfig struct {
-	RepoID   uuid.UUID
-	RepoName string
-	RepoPath string
-	Model    string
-	Pool     *pgxpool.Pool
-	LLM      llm.Client
+	RepoID      uuid.UUID
+	RepoName    string
+	RepoPath    string
+	Model       string
+	Pool        *pgxpool.Pool
+	LLM         llm.Client
+	GitLogLimit int
 }
 
 func RunGitLogAnalysis(ctx context.Context, cfg GitLogConfig) error {
@@ -59,7 +60,11 @@ func RunGitLogAnalysis(ctx context.Context, cfg GitLogConfig) error {
 	}
 
 	// Parse git log
-	commits, err := git.ParseLog(cfg.RepoPath, 100)
+	limit := cfg.GitLogLimit
+	if limit <= 0 {
+		limit = 500
+	}
+	commits, err := git.ParseLog(cfg.RepoPath, limit)
 	if err != nil {
 		jobStore.Fail(ctx, claimed.ID, err.Error())
 		return fmt.Errorf("parsing git log: %w", err)
@@ -139,6 +144,16 @@ func RunGitLogAnalysis(ctx context.Context, cfg GitLogConfig) error {
 			entityID = repoEntity.ID
 		}
 
+		// Build provenance ref from commit range
+		gitRef := "git-history"
+		if len(commits) > 0 {
+			first := commits[0].SHA
+			last := commits[len(commits)-1].SHA
+			if len(first) >= 8 && len(last) >= 8 {
+				gitRef = fmt.Sprintf("git:%s..%s", last[:8], first[:8])
+			}
+		}
+
 		fact := &models.Fact{
 			EntityID:   entityID,
 			RepoID:     cfg.RepoID,
@@ -149,7 +164,7 @@ func RunGitLogAnalysis(ctx context.Context, cfg GitLogConfig) error {
 			Provenance: []models.Provenance{{
 				SourceType: "commit",
 				Repo:       cfg.RepoName,
-				Ref:        "git-history",
+				Ref:        gitRef,
 			}},
 		}
 		if err := factStore.Create(ctx, fact); err != nil {

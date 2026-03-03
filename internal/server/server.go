@@ -7,9 +7,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tgeorge06/atlaskb/internal/config"
 	"github.com/tgeorge06/atlaskb/internal/embeddings"
 	"github.com/tgeorge06/atlaskb/internal/llm"
+	"github.com/tgeorge06/atlaskb/internal/mcp"
 )
 
 type Server struct {
@@ -44,6 +46,8 @@ func (s *Server) buildRouter() chi.Router {
 	r.Use(corsMiddleware)
 
 	r.Route("/api", func(r chi.Router) {
+		r.Get("/health", s.handleHealth)
+
 		r.Get("/stats", s.handleStats)
 		r.Get("/stats/recent-runs", s.handleRecentRuns)
 
@@ -88,6 +92,15 @@ func (s *Server) buildRouter() chi.Router {
 		r.Delete("/chats/{id}", s.handleDeleteChat)
 		r.Post("/chats/{id}/messages", s.handleChatMessage)
 	})
+
+	// MCP over Streamable HTTP — allows N agents to connect over HTTP
+	mcpSrv := gomcp.NewServer(&gomcp.Implementation{Name: "atlaskb", Version: "0.1.0"}, nil)
+	mcp.RegisterTools(mcpSrv, s.pool, s.embedder)
+	mcpHandler := gomcp.NewStreamableHTTPHandler(func(*http.Request) *gomcp.Server {
+		return mcpSrv
+	}, nil)
+	r.Handle("/mcp", mcpHandler)
+	r.Handle("/mcp/*", mcpHandler)
 
 	// SPA fallback — serve static files, fall back to index.html
 	s.serveSPA(r)

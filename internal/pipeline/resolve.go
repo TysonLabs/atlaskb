@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -118,4 +119,27 @@ func resolveEntityWithMap(ctx context.Context, entityStore *models.EntityStore, 
 
 	// Fall back to DB resolution
 	return resolveEntity(ctx, entityStore, repoID, qualifiedName)
+}
+
+// sortEntitiesByRichness orders entities by fact count + relationship count (descending)
+// so that capping keeps the most information-rich entities.
+func sortEntitiesByRichness(ctx context.Context, entities []models.Entity, factStore *models.FactStore, relStore *models.RelationshipStore) []models.Entity {
+	type scored struct {
+		entity models.Entity
+		weight int
+	}
+	scored_ := make([]scored, len(entities))
+	for i, e := range entities {
+		facts, _ := factStore.ListByEntity(ctx, e.ID)
+		rels, _ := relStore.ListByEntity(ctx, e.ID)
+		scored_[i] = scored{entity: e, weight: len(facts) + len(rels)}
+	}
+	sort.Slice(scored_, func(i, j int) bool {
+		return scored_[i].weight > scored_[j].weight
+	})
+	result := make([]models.Entity, len(entities))
+	for i, s := range scored_ {
+		result[i] = s.entity
+	}
+	return result
 }

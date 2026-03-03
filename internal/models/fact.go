@@ -152,7 +152,7 @@ type ScoredFact struct {
 func (s *FactStore) SearchByVector(ctx context.Context, embedding pgvector.Vector, repoIDs []uuid.UUID, limit int) ([]ScoredFact, error) {
 	query := `SELECT id, entity_id, repo_id, claim, dimension, category, confidence, provenance, superseded_by, created_at, updated_at,
 		 1 - (embedding <=> $1) AS score
-		 FROM facts WHERE embedding IS NOT NULL AND superseded_by IS NULL AND 1 - (embedding <=> $1) >= 0.3`
+		 FROM facts WHERE embedding IS NOT NULL AND superseded_by IS NULL AND 1 - (embedding <=> $1) >= 0.4`
 	args := []any{embedding}
 	argIdx := 2
 

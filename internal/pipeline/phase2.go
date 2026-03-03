@@ -30,6 +30,31 @@ type Phase2Config struct {
 	LLM          llm.Client
 	Roster       []EntityEntry // Ctags-derived entity roster for grounding names
 	ProgressFunc func(msg string)
+	ContextWindow int // Model context window in tokens (0 = use default 32768)
+}
+
+// computeMaxContentBytes calculates the maximum file content size (in bytes) that
+// fits within the model's context window after reserving space for the output tokens
+// and the static prompt overhead.
+func computeMaxContentBytes(contextWindow, maxTokens, staticPromptBytes int) int {
+	staticTokens := staticPromptBytes / bytesPerToken
+	contentTokens := contextWindow - maxTokens - staticTokens
+	if contentTokens < 512 {
+		contentTokens = 512
+	}
+	return contentTokens * bytesPerToken
+}
+
+// computeMaxTokens calculates dynamic max_tokens for the LLM response based on
+// the number of ctags symbols in the file. More symbols → more entities → more output.
+// Each symbol can produce an entity (~50 tokens), 4-10 facts (~150 tokens each),
+// and relationships (~50 tokens each), so ~500 tokens per symbol is a reasonable estimate.
+func computeMaxTokens(symbolCount int) int {
+	tokens := 4096 + symbolCount*512
+	if tokens > 16384 {
+		return 16384
+	}
+	return tokens
 }
 
 type Phase2Stats struct {
@@ -232,25 +257,71 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 
 	fi := ClassifyFile(job.Target, int64(len(content)))
 
-	prompt := Phase2Prompt(job.Target, fi.Language, cfg.RepoName, cfg.Manifest.Stack, string(content), cfg.Roster)
+	// Count ctags symbols for this file to size the output budget
+	symbolCount := 0
+	for _, e := range cfg.Roster {
+		if e.Path == job.Target {
+			symbolCount++
+		}
+	}
+	maxTokens := computeMaxTokens(symbolCount)
 
-	resp, attempts, err := callLLMWithRetry(ctx, cfg.LLM, cfg.Model, systemPromptPhase2, []llm.Message{
-		{Role: "user", Content: prompt},
-	}, 4096, SchemaPhase2, DefaultRetryConfig)
-	if err != nil {
-		return nil, fmt.Errorf("LLM call: %w", err)
+	// Measure static prompt overhead (prompt with empty content)
+	staticPrompt := Phase2Prompt(job.Target, fi.Language, cfg.RepoName, cfg.Manifest.Stack, "", cfg.Roster)
+	contextWindow := cfg.ContextWindow
+	if contextWindow <= 0 {
+		contextWindow = 32768
+	}
+	maxContentBytes := computeMaxContentBytes(contextWindow, maxTokens, len(systemPromptPhase2)+len(staticPrompt))
+
+	// Truncate file content if it exceeds the budget
+	fileContent := string(content)
+	if len(fileContent) > maxContentBytes {
+		log.Printf("[phase2] %s: truncating content from %d to %d bytes (context window: %d tokens)",
+			job.Target, len(fileContent), maxContentBytes, contextWindow)
+		fileContent = fileContent[:maxContentBytes]
 	}
 
-	result, err := ParsePhase2(resp.Content)
+	prompt := Phase2Prompt(job.Target, fi.Language, cfg.RepoName, cfg.Manifest.Stack, fileContent, cfg.Roster)
+
+	// Parse retry loop: retry on parse failures with increased max_tokens
+	const maxParseAttempts = 3
+	var result *Phase2Result
+	var resp *llm.Response
+	var attempts int
+	currentMaxTokens := maxTokens
+	tokensCap := contextWindow / 4
+
+	for attempt := 1; attempt <= maxParseAttempts; attempt++ {
+		resp, attempts, err = callLLMWithRetry(ctx, cfg.LLM, cfg.Model, systemPromptPhase2, []llm.Message{
+			{Role: "user", Content: prompt},
+		}, currentMaxTokens, SchemaPhase2, DefaultRetryConfig)
+		if err != nil {
+			return nil, fmt.Errorf("LLM call: %w", err)
+		}
+
+		result, err = ParsePhase2(resp.Content)
+		if err == nil {
+			break // success
+		}
+
+		if attempt < maxParseAttempts {
+			log.Printf("[phase2] %s: parse attempt %d/%d failed, bumping max_tokens %d → %d",
+				job.Target, attempt, maxParseAttempts, currentMaxTokens, currentMaxTokens*3/2)
+			currentMaxTokens = currentMaxTokens * 3 / 2
+			if currentMaxTokens > tokensCap {
+				currentMaxTokens = tokensCap
+			}
+		}
+	}
 	if err != nil {
 		cleaned := CleanJSON(resp.Content)
 		preview := cleaned
 		if len(preview) > 200 {
 			preview = preview[:200]
 		}
-		return nil, fmt.Errorf("parsing response: %w\n  raw preview: %s", err, preview)
+		return nil, fmt.Errorf("parsing response after %d attempts: %w\n  raw preview: %s", maxParseAttempts, err, preview)
 	}
-	_ = attempts
 
 	log.Printf("[phase2] %s: extracted %d entities, %d facts, %d relationships",
 		job.Target, len(result.Entities), len(result.Facts), len(result.Relationships))
@@ -341,11 +412,50 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 		logVerboseF("[phase2] %s: entity %q → INSERT (no existing match)", job.Target, ext.QualifiedName)
 	}
 
-	// Store facts
+	// Store file summary as a fact on the first entity in this file
+	if result.FileSummary != "" && len(entityMap) > 0 {
+		// Use the first entity from this file's extraction as the anchor
+		var summaryEntityID uuid.UUID
+		for _, ext := range result.Entities {
+			if id, ok := entityMap[ext.QualifiedName]; ok {
+				summaryEntityID = id
+				break
+			}
+		}
+		if summaryEntityID != uuid.Nil {
+			summaryFact := &models.Fact{
+				EntityID:   summaryEntityID,
+				RepoID:     cfg.RepoID,
+				Claim:      fmt.Sprintf("File %s: %s", job.Target, result.FileSummary),
+				Dimension:  models.DimensionWhat,
+				Category:   models.CategoryBehavior,
+				Confidence: models.ConfidenceMedium,
+				Provenance: []models.Provenance{{
+					SourceType: "file",
+					Repo:       cfg.RepoName,
+					Ref:        job.Target,
+					AnalyzedAt: job.CreatedAt.Format("2006-01-02T15:04:05Z"),
+				}},
+			}
+			if err := factStore.Create(ctx, summaryFact); err != nil {
+				logVerboseF("[phase2] warn: creating file summary fact: %v", err)
+			} else {
+				stats.FactsCreated++
+			}
+		}
+	}
+
+	// Store facts — track which entities receive facts for orphan diagnostics
+	entitiesWithFacts := make(map[uuid.UUID]int)    // entity ID → fact count
+	factsSkippedNoEntity := 0
+	factsSkippedError := 0
+	var unresolvedFactNames []string
 	for _, ext := range result.Facts {
 		entityID, ok := resolveEntityWithMap(ctx, entityStore, cfg.RepoID, ext.EntityName, entityMap)
 		if !ok {
-			logVerboseF("[phase2] %s: fact skipped (entity not found): %s", job.Target, ext.EntityName)
+			factsSkippedNoEntity++
+			unresolvedFactNames = append(unresolvedFactNames, ext.EntityName)
+			logVerboseF("[phase2] %s: fact skipped (entity not found): %q → claim: %q", job.Target, ext.EntityName, truncStr(ext.Claim, 80))
 			continue
 		}
 
@@ -364,10 +474,50 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 			}},
 		}
 		if err := factStore.Create(ctx, fact); err != nil {
+			factsSkippedError++
 			logVerboseF("[phase2] warn: creating fact: %v", err)
 			continue
 		}
+		entitiesWithFacts[entityID]++
 		stats.FactsCreated++
+	}
+
+	// Orphan diagnostics: log entities that got 0 facts from the LLM
+	var orphanNames []string
+	llmFactNames := make(map[string]bool)
+	for _, f := range result.Facts {
+		llmFactNames[f.EntityName] = true
+	}
+	for _, ext := range result.Entities {
+		eid, ok := entityMap[ext.QualifiedName]
+		if !ok {
+			continue
+		}
+		if entitiesWithFacts[eid] == 0 {
+			orphanNames = append(orphanNames, ext.QualifiedName)
+			// Determine why: did the LLM emit any facts targeting this entity?
+			if llmFactNames[ext.QualifiedName] {
+				logVerboseF("[phase2-orphan] %s: %q — LLM emitted facts but name resolution failed", job.Target, ext.QualifiedName)
+			} else {
+				logVerboseF("[phase2-orphan] %s: %q — LLM emitted ZERO facts for this entity", job.Target, ext.QualifiedName)
+			}
+		}
+	}
+	if len(orphanNames) > 0 || factsSkippedNoEntity > 0 {
+		log.Printf("[phase2-orphan] %s: %d/%d entities got 0 facts, %d facts skipped (unresolved name), %d facts skipped (db error)",
+			job.Target, len(orphanNames), len(result.Entities), factsSkippedNoEntity, factsSkippedError)
+		if len(unresolvedFactNames) > 0 {
+			// Deduplicate for log readability
+			seen := make(map[string]bool)
+			var unique []string
+			for _, n := range unresolvedFactNames {
+				if !seen[n] {
+					seen[n] = true
+					unique = append(unique, n)
+				}
+			}
+			log.Printf("[phase2-orphan] %s: unresolved fact entity_names: %v", job.Target, unique)
+		}
 	}
 
 	// Store relationships using Upsert, defer unresolvable ones
@@ -422,9 +572,20 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 	return fileDeferred, err
 }
 
+// pipelineVerbose is set by the orchestrator to control verbose logging.
+var pipelineVerbose bool
+
 func logVerboseF(format string, args ...any) {
-	// This will be wired to the CLI verbose flag via the orchestrator
-	fmt.Printf(format+"\n", args...)
+	if pipelineVerbose {
+		fmt.Printf(format+"\n", args...)
+	}
+}
+
+func truncStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 // qualifiedNamePackage extracts the package/module prefix from a qualified name.

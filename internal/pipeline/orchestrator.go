@@ -29,6 +29,7 @@ type OrchestratorConfig struct {
 	LLM               llm.Client
 	Embedder          embeddings.Client
 	Verbose           bool
+	GitLogLimit       int
 	Phases            []string // If non-empty, only run these phases (e.g. ["phase4"])
 	ProgressFunc      func(msg string) // Optional callback for progress updates
 	GlobalExcludeDirs []string // Global dirs to exclude (from config)
@@ -69,6 +70,7 @@ func shouldRunPhase(phases []string, phase string) bool {
 }
 
 func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResult, error) {
+	pipelineVerbose = cfg.Verbose
 	start := time.Now()
 	result := &OrchestratorResult{}
 
@@ -330,6 +332,15 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	// Track whether Phase 2 processed any files (for smart update logic)
 	phase2Processed := false
 
+	// Fetch model context window for dynamic token budgeting (used by Phase 2 + Backfill)
+	contextWindow := 32768
+	if shouldRunPhase(cfg.Phases, "phase2") || shouldRunPhase(cfg.Phases, "backfill") {
+		if cw, err := cfg.LLM.GetContextWindow(ctx, cfg.ExtractionModel); err == nil && cw > 0 {
+			contextWindow = cw
+			log.Printf("[config] model context window: %d tokens", contextWindow)
+		}
+	}
+
 	// Phase 2: File analysis
 	if shouldRunPhase(cfg.Phases, "phase2") {
 		if manifest == nil {
@@ -343,16 +354,17 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		fmt.Println("Phase 2: File analysis...")
 		cfg.progress("Phase 2: LLM file analysis...")
 		phase2Stats, err := RunPhase2(ctx, Phase2Config{
-			RepoID:       repo.ID,
-			RepoName:     repoName,
-			RepoPath:     repoInfo.RootPath,
-			Manifest:     manifest,
-			Model:        cfg.ExtractionModel,
-			Concurrency:  cfg.Concurrency,
-			Pool:         cfg.Pool,
-			LLM:          cfg.LLM,
-			Roster:       entityRoster,
-			ProgressFunc: cfg.ProgressFunc,
+			RepoID:        repo.ID,
+			RepoName:      repoName,
+			RepoPath:      repoInfo.RootPath,
+			Manifest:      manifest,
+			Model:         cfg.ExtractionModel,
+			Concurrency:   cfg.Concurrency,
+			Pool:          cfg.Pool,
+			LLM:           cfg.LLM,
+			Roster:        entityRoster,
+			ProgressFunc:  cfg.ProgressFunc,
+			ContextWindow: contextWindow,
 		})
 		if err != nil {
 			return result, fmt.Errorf("phase 2: %w", err)
@@ -394,13 +406,14 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		fmt.Println("Phase 2.5: Backfill orphan entities...")
 		cfg.progress("Phase 2.5: Backfilling orphan entities...")
 		backfillStats, err := RunBackfill(ctx, BackfillConfig{
-			RepoID:      repo.ID,
-			RepoName:    repoName,
-			RepoPath:    repoInfo.RootPath,
-			Model:       cfg.ExtractionModel,
-			Concurrency: cfg.Concurrency,
-			Pool:        cfg.Pool,
-			LLM:         cfg.LLM,
+			RepoID:        repo.ID,
+			RepoName:      repoName,
+			RepoPath:      repoInfo.RootPath,
+			Model:         cfg.ExtractionModel,
+			Concurrency:   cfg.Concurrency,
+			Pool:          cfg.Pool,
+			LLM:           cfg.LLM,
+			ContextWindow: contextWindow,
 		})
 		if err != nil {
 			fmt.Printf("  Warning: backfill failed: %v\n", err)
@@ -421,16 +434,17 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	}
 
 	// Git log analysis
-	if shouldRunPhase(cfg.Phases, "gitlog") || shouldRunPhase(cfg.Phases, "phase2") {
+	if shouldRunPhase(cfg.Phases, "gitlog") || len(cfg.Phases) == 0 {
 		fmt.Println("Git log analysis...")
 		cfg.progress("Analyzing git history...")
 		if err := RunGitLogAnalysis(ctx, GitLogConfig{
-			RepoID:   repo.ID,
-			RepoName: repoName,
-			RepoPath: repoInfo.RootPath,
-			Model:    cfg.ExtractionModel,
-			Pool:     cfg.Pool,
-			LLM:      cfg.LLM,
+			RepoID:      repo.ID,
+			RepoName:    repoName,
+			RepoPath:    repoInfo.RootPath,
+			Model:       cfg.ExtractionModel,
+			Pool:        cfg.Pool,
+			LLM:         cfg.LLM,
+			GitLogLimit: cfg.GitLogLimit,
 		}); err != nil {
 			fmt.Printf("  Warning: git log analysis failed: %v\n", err)
 		}
@@ -442,7 +456,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	}
 
 	// Phase 3: GitHub PR/issue mining
-	if shouldRunPhase(cfg.Phases, "phase3") || shouldRunPhase(cfg.Phases, "phase2") || len(cfg.Phases) == 0 {
+	if shouldRunPhase(cfg.Phases, "phase3") || len(cfg.Phases) == 0 {
 		fmt.Println("Phase 3: GitHub PR/issue mining...")
 		cfg.progress("Phase 3: GitHub PR/issue mining...")
 

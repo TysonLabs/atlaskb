@@ -10,6 +10,10 @@ import (
 	"github.com/tgeorge06/atlaskb/internal/models"
 )
 
+type repoMatch struct {
+	repo models.Repo
+}
+
 // DiscoverCrossRepoLinks matches dependency names from ExtractDependencies against
 // the repos table to auto-create cross-repo relationships.
 func DiscoverCrossRepoLinks(ctx context.Context, pool *pgxpool.Pool, repoID uuid.UUID, repoName string, deps []Dependency) (created, skipped int) {
@@ -28,9 +32,6 @@ func DiscoverCrossRepoLinks(ctx context.Context, pool *pgxpool.Pool, repoID uuid
 	}
 
 	// Build lookup: normalized name/URL fragment -> repo
-	type repoMatch struct {
-		repo models.Repo
-	}
 	repoIndex := make(map[string]*repoMatch)
 	for _, r := range allRepos {
 		if r.ID == repoID {
@@ -60,7 +61,11 @@ func DiscoverCrossRepoLinks(ctx context.Context, pool *pgxpool.Pool, repoID uuid
 
 		match, ok := repoIndex[normalized]
 		if !ok {
-			continue
+			// Fuzzy fallback: substring/contains match
+			match = fuzzyMatchRepo(normalized, repoIndex)
+			if match == nil {
+				continue
+			}
 		}
 
 		// Find repo-root entity for the target repo
@@ -114,6 +119,27 @@ func normalizeDependencyName(name string) string {
 	}
 
 	return name
+}
+
+// fuzzyMatchRepo tries substring and contains matching against the repo index.
+// Returns the best match or nil if none found.
+func fuzzyMatchRepo(normalized string, repoIndex map[string]*repoMatch) *repoMatch {
+	// 1. Check if the dependency name contains a repo name (e.g., "vector-ivr-core-lib" contains "vector-ivr-core")
+	var bestMatch *repoMatch
+	bestLen := 0
+	for name, m := range repoIndex {
+		// Repo name is a substring of dependency name
+		if strings.Contains(normalized, name) && len(name) > bestLen {
+			bestMatch = m
+			bestLen = len(name)
+		}
+		// Dependency name is a substring of repo name
+		if len(normalized) >= 3 && strings.Contains(name, normalized) && len(name) > bestLen {
+			bestMatch = m
+			bestLen = len(name)
+		}
+	}
+	return bestMatch
 }
 
 // extractURLRepoName gets the repo name from a remote URL.

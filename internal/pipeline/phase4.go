@@ -70,8 +70,9 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 		}
 		coreEntities = append(coreEntities, e)
 	}
-	// Cap entities to keep context manageable (model has 40k context)
+	// Sort entities by richness (fact + relationship count) so the cap keeps the most valuable ones
 	if len(coreEntities) > 60 {
+		coreEntities = sortEntitiesByRichness(ctx, coreEntities, factStore, relStore)
 		coreEntities = coreEntities[:60]
 	}
 

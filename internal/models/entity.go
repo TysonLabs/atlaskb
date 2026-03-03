@@ -312,6 +312,45 @@ func (s *EntityStore) FindByPath(ctx context.Context, repoID uuid.UUID, path str
 	return e, nil
 }
 
+// FindByPathSuffix finds the first entity whose path ends with the given suffix.
+// Used as a fallback when exact path match fails (e.g. worktree-indexed paths).
+func (s *EntityStore) FindByPathSuffix(ctx context.Context, repoID uuid.UUID, suffix string) (*Entity, error) {
+	e := &Entity{}
+	pattern := "%/" + suffix
+	err := s.Pool.QueryRow(ctx,
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		 FROM entities WHERE repo_id = $1 AND path LIKE $2 LIMIT 1`, repoID, pattern,
+	).Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("finding entity by path suffix: %w", err)
+	}
+	return e, nil
+}
+
+// ListByPathSuffix returns all entities whose path ends with the given suffix.
+func (s *EntityStore) ListByPathSuffix(ctx context.Context, repoID uuid.UUID, suffix string) ([]Entity, error) {
+	pattern := "%/" + suffix
+	rows, err := s.Pool.Query(ctx,
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		 FROM entities WHERE repo_id = $1 AND path LIKE $2`, repoID, pattern)
+	if err != nil {
+		return nil, fmt.Errorf("listing entities by path suffix: %w", err)
+	}
+	defer rows.Close()
+	var entities []Entity
+	for rows.Next() {
+		var e Entity
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, err
+		}
+		entities = append(entities, e)
+	}
+	return entities, nil
+}
+
 func (s *EntityStore) DeleteByRepo(ctx context.Context, repoID uuid.UUID) error {
 	_, err := s.Pool.Exec(ctx, `DELETE FROM entities WHERE repo_id = $1`, repoID)
 	if err != nil {

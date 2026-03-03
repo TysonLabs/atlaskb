@@ -42,7 +42,7 @@ func TestShouldAnalyze(t *testing.T) {
 		want  bool
 	}{
 		{ClassSource, true},
-		{ClassTest, true},
+		{ClassTest, false},
 		{ClassConfig, true},
 		{ClassDoc, true},
 		{ClassBuild, true},

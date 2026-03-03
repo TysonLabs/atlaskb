@@ -40,7 +40,6 @@ type ctagsRawEntry struct {
 }
 
 // topLevelKinds are the ctags kinds we consider top-level entities.
-// Methods and properties are discovered as children during Phase 2.
 var topLevelKinds = map[string]bool{
 	"class":     true,
 	"interface": true,
@@ -53,6 +52,25 @@ var topLevelKinds = map[string]bool{
 	"enum":      true,
 	"constant":  true,
 	"variable":  true, // top-level exported vars
+}
+
+// methodKinds are ctags kinds that represent methods/members on a type.
+// These are included in the roster with their owner as a prefix.
+var methodKinds = map[string]bool{
+	"function": true, // Rust impl methods, Go methods
+	"method":   true, // Python/JS class methods
+	"member":   true, // C++ class members
+}
+
+// methodScopeKinds are the scope kinds that indicate a method belongs to a type.
+var methodScopeKinds = map[string]bool{
+	"struct":    true, // Rust impl, Go receiver
+	"type":      true, // Go type methods
+	"class":     true, // Python/JS/TS class methods
+	"interface": true, // Go interface methods, TS interface methods
+	"trait":     true, // Rust trait methods
+	"enum":      true, // Rust enum methods
+	"impl":      true, // Rust impl blocks
 }
 
 // RunCtags executes Universal Ctags on the given repository path and returns
@@ -83,6 +101,7 @@ func RunCtags(repoPath string) (map[string][]CtagsSymbol, error) {
 		"--exclude=__pycache__",
 		"--exclude=.mypy_cache",
 		"--exclude=target",
+		"--exclude=.myrmex",
 		absPath,
 	)
 
@@ -109,14 +128,11 @@ func RunCtags(repoPath string) (map[string][]CtagsSymbol, error) {
 			continue
 		}
 
-		// Only keep top-level kinds
-		if !topLevelKinds[entry.Kind] {
-			continue
-		}
+		// Include top-level symbols AND methods on types
+		isTopLevel := topLevelKinds[entry.Kind] && (entry.Scope == "" || entry.ScopeKind == "module" || entry.ScopeKind == "package")
+		isMethod := methodKinds[entry.Kind] && entry.Scope != "" && methodScopeKinds[entry.ScopeKind]
 
-		// Skip scoped symbols (methods, nested functions) — they have a scope
-		// Exception: module-level functions in Python have scope="module" which we keep
-		if entry.Scope != "" && entry.ScopeKind != "module" && entry.ScopeKind != "package" {
+		if !isTopLevel && !isMethod {
 			continue
 		}
 
@@ -179,15 +195,20 @@ func BuildEntityRoster(symbols map[string][]CtagsSymbol) []EntityEntry {
 }
 
 // buildQualifiedName creates a canonical qualified name from a ctags symbol.
-// Convention: <module>::<Name> where module is derived from the file path.
+// Convention: <module>::<Name> for top-level symbols, <module>::<Owner>.<Method> for methods.
 //
 // Examples:
 //
 //	src/channels/registry.ts → channels::ChannelRegistry
 //	internal/storage/memory.go → storage::MemoryStorage
 //	validators/email.py → validators::EmailValidator
+//	impl MemoryStorage::Save → storage::MemoryStorage.Save
 func buildQualifiedName(sym CtagsSymbol) string {
 	module := deriveModuleName(sym.Path)
+	// Methods: include owner as prefix with "." separator
+	if sym.Scope != "" && methodScopeKinds[sym.ScopeKind] {
+		return module + "::" + sym.Scope + "." + sym.Name
+	}
 	return module + "::" + sym.Name
 }
 
