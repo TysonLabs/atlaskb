@@ -37,6 +37,7 @@ const (
 	CategoryConvention = "convention"
 	CategoryDebt       = "debt"
 	CategoryRisk       = "risk"
+	CategoryContract   = "contract"
 )
 
 // Confidence levels
@@ -110,6 +111,8 @@ type Entity struct {
 	Summary       *string   `json:"summary,omitempty"`
 	Capabilities  []string  `json:"capabilities,omitempty"`
 	Assumptions   []string  `json:"assumptions,omitempty"`
+	Signature     *string   `json:"signature,omitempty"`
+	TypeRef       *string   `json:"typeref,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }

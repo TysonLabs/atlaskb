@@ -36,7 +36,7 @@ var SchemaPhase2 = &llm.JSONSchema{
           "entity_name": { "type": "string" },
           "claim": { "type": "string" },
           "dimension": { "type": "string", "enum": ["what","how","why","when"] },
-          "category": { "type": "string", "enum": ["behavior","constraint","pattern","convention","debt","risk"] },
+          "category": { "type": "string", "enum": ["behavior","constraint","pattern","convention","debt","risk","contract"] },
           "confidence": { "type": "string", "enum": ["high","medium","low"] }
         },
         "required": ["entity_name","claim","dimension","category","confidence"],
@@ -117,7 +117,7 @@ var SchemaPhase4 = &llm.JSONSchema{
           "entity_name": { "type": "string" },
           "claim": { "type": "string" },
           "dimension": { "type": "string", "enum": ["what","how","why","when"] },
-          "category": { "type": "string", "enum": ["behavior","constraint","pattern","convention","debt","risk"] },
+          "category": { "type": "string", "enum": ["behavior","constraint","pattern","convention","debt","risk","contract"] },
           "confidence": { "type": "string", "enum": ["high","medium","low"] }
         },
         "required": ["entity_name","claim","dimension","category","confidence"],
@@ -187,7 +187,7 @@ var SchemaPhase3 = &llm.JSONSchema{
           "entity_name": { "type": "string" },
           "claim": { "type": "string" },
           "dimension": { "type": "string", "enum": ["what","how","why","when"] },
-          "category": { "type": "string", "enum": ["behavior","constraint","pattern","convention","debt","risk"] },
+          "category": { "type": "string", "enum": ["behavior","constraint","pattern","convention","debt","risk","contract"] },
           "confidence": { "type": "string", "enum": ["high","medium","low"] }
         },
         "required": ["entity_name","claim","dimension","category","confidence"],
@@ -241,7 +241,7 @@ var SchemaGitLog = &llm.JSONSchema{
           "entity_name": { "type": "string" },
           "claim": { "type": "string" },
           "dimension": { "type": "string", "enum": ["what","how","why","when"] },
-          "category": { "type": "string", "enum": ["behavior","constraint","pattern","convention","debt","risk"] },
+          "category": { "type": "string", "enum": ["behavior","constraint","pattern","convention","debt","risk","contract"] },
           "confidence": { "type": "string", "enum": ["high","medium","low"] }
         },
         "required": ["entity_name","claim","dimension","category","confidence"],

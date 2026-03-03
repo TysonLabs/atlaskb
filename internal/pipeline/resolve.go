@@ -9,8 +9,52 @@ import (
 	"github.com/tgeorge06/atlaskb/internal/models"
 )
 
+// resolveNameAlternatives generates alternative qualified names to try when exact
+// matching fails. Fixes common LLM naming mistakes:
+//   - "pkg::Owner::Method" → "pkg::Owner.Method" (Rust uses :: for methods, we use .)
+//   - "src::Name" → "Name" (LLM uses "src" as module prefix)
+//   - "tests::Name" → "Name" (LLM uses test module prefix)
+//
+// Returns a list of alternative names to try (may be empty).
+func resolveNameAlternatives(qualifiedName string) []string {
+	var alts []string
+
+	// Fix Rust-style Owner::Method where LLM used :: instead of .
+	// Pattern: "Owner::Method" where Owner is CamelCase (likely a type name)
+	// e.g. "KeyBindings::defaults" → look for "keybinds::KeyBindings.defaults"
+	if idx := strings.Index(qualifiedName, "::"); idx >= 0 {
+		afterSep := qualifiedName[idx+2:]
+		// Check if what's after :: contains another :: (i.e. "pkg::Owner::Method")
+		if innerIdx := strings.Index(afterSep, "::"); innerIdx >= 0 {
+			// "pkg::Owner::Method" → try "pkg::Owner.Method"
+			pkg := qualifiedName[:idx]
+			owner := afterSep[:innerIdx]
+			method := afterSep[innerIdx+2:]
+			alts = append(alts, pkg+"::"+owner+"."+method)
+		} else if len(afterSep) > 0 && afterSep[0] >= 'A' && afterSep[0] <= 'Z' {
+			// "Owner::Method" with no pkg prefix — could be missing the package
+			// Don't add alt here, the fuzzy match below will handle it
+		}
+	}
+
+	// Strip "src::" prefix — LLM sometimes uses "src" as the module name
+	if strings.HasPrefix(qualifiedName, "src::") {
+		stripped := qualifiedName[5:]
+		alts = append(alts, stripped)
+	}
+
+	// Strip "tests::" prefix — test module names
+	if strings.HasPrefix(qualifiedName, "tests::") {
+		stripped := qualifiedName[7:]
+		alts = append(alts, stripped)
+	}
+
+	return alts
+}
+
 // resolveEntity attempts to find an entity by qualified_name using a fallback chain:
 //  1. Exact match via FindByQualifiedName
+//  1b. Normalized name alternatives (Owner::Method → Owner.Method, strip "src::")
 //  2. Owner entity (e.g. "bus::Bus" for "bus::Bus.dispatch")
 //  3. Fuzzy name suffix match within the same package
 //
@@ -20,6 +64,15 @@ func resolveEntity(ctx context.Context, entityStore *models.EntityStore, repoID 
 	entity, _ := entityStore.FindByQualifiedName(ctx, repoID, qualifiedName)
 	if entity != nil {
 		return entity.ID, true
+	}
+
+	// 1b. Try normalized alternatives
+	for _, alt := range resolveNameAlternatives(qualifiedName) {
+		entity, _ = entityStore.FindByQualifiedName(ctx, repoID, alt)
+		if entity != nil {
+			logVerboseF("[resolve] %s → normalized to %s", qualifiedName, alt)
+			return entity.ID, true
+		}
 	}
 
 	// 2. Owner entity fallback (e.g. "bus::Bus" for "bus::Bus.dispatch")
@@ -73,7 +126,24 @@ func resolveEntity(ctx context.Context, entityStore *models.EntityStore, repoID 
 		}
 	}
 
-	// 4. Unqualified name fallback: if the name has no "::" separator, search across all packages
+	// 4. Cross-package method match: "Owner::Method" → search for any "*.Owner.Method"
+	// Handles LLM using wrong package or Rust-style :: for methods
+	if strings.Contains(shortName, "::") {
+		parts := strings.SplitN(shortName, "::", 2)
+		if len(parts) == 2 {
+			methodName := parts[1]
+			candidates, _ = entityStore.FindByName(ctx, repoID, methodName)
+			dotForm := parts[0] + "." + parts[1]
+			for _, c := range candidates {
+				if strings.HasSuffix(c.QualifiedName, dotForm) {
+					logVerboseF("[resolve] %s → cross-pkg method match to %s", qualifiedName, c.QualifiedName)
+					return c.ID, true
+				}
+			}
+		}
+	}
+
+	// 5. Unqualified name fallback: if the name has no "::" separator, search across all packages
 	// This handles cases like "HeaderFilter" (from tests) matching "filters::HeaderFilter"
 	if !strings.Contains(qualifiedName, "::") {
 		candidates, _ := entityStore.FindByName(ctx, repoID, qualifiedName)
@@ -95,6 +165,14 @@ func resolveEntityWithMap(ctx context.Context, entityStore *models.EntityStore, 
 		return id, true
 	}
 
+	// Check normalized alternatives in local map
+	for _, alt := range resolveNameAlternatives(qualifiedName) {
+		if id, ok := entityMap[alt]; ok {
+			logVerboseF("[resolve] %s → normalized to %s (from map)", qualifiedName, alt)
+			return id, true
+		}
+	}
+
 	// Check owner in local map
 	owner := qualifiedNameOwner(qualifiedName)
 	if owner != qualifiedName {
@@ -104,7 +182,8 @@ func resolveEntityWithMap(ctx context.Context, entityStore *models.EntityStore, 
 		}
 	}
 
-	// Check suffix match in local map
+	// Check suffix match in local map — handles cross-package method references
+	// e.g. "KeyBindings::defaults" matching "keybinds::KeyBindings.defaults"
 	shortName := qualifiedName
 	if idx := strings.LastIndex(shortName, "::"); idx >= 0 {
 		shortName = shortName[idx+2:]
@@ -114,6 +193,19 @@ func resolveEntityWithMap(ctx context.Context, entityStore *models.EntityStore, 
 		if qualifiedNamePackage(qn) == pkg && strings.HasSuffix(qn, "."+shortName) {
 			logVerboseF("[resolve] %s → suffix matched to %s (from map)", qualifiedName, qn)
 			return eid, true
+		}
+	}
+
+	// Also try matching "Owner::Method" as any entity ending in "Owner.Method"
+	// across all packages in the map (handles wrong package prefix from LLM)
+	if strings.Contains(shortName, "::") {
+		// shortName is "Owner::Method" — convert to "Owner.Method" for suffix matching
+		dotForm := strings.Replace(shortName, "::", ".", 1)
+		for qn, eid := range entityMap {
+			if strings.HasSuffix(qn, dotForm) {
+				logVerboseF("[resolve] %s → cross-pkg matched to %s (from map)", qualifiedName, qn)
+				return eid, true
+			}
 		}
 	}
 

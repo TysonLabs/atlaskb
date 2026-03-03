@@ -272,6 +272,8 @@ type entitySummary struct {
 	Kind         string   `json:"kind"`
 	Path         string   `json:"path,omitempty"`
 	Summary      string   `json:"summary,omitempty"`
+	Signature    string   `json:"signature,omitempty"`
+	Returns      string   `json:"returns,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
 	Assumptions  []string `json:"assumptions,omitempty"`
 }
@@ -722,7 +724,7 @@ func (s *Server) handleGetServiceContract(ctx context.Context, req *gomcp.CallTo
 
 	invariants := make([]factItem, 0)
 	for _, f := range allFacts {
-		if f.Category == models.CategoryBehavior || f.Category == models.CategoryConstraint {
+		if f.Category == models.CategoryBehavior || f.Category == models.CategoryConstraint || f.Category == models.CategoryContract {
 			invariants = append(invariants, factItem{
 				Claim:      f.Claim,
 				Dimension:  f.Dimension,
@@ -1147,7 +1149,7 @@ func (s *Server) handleGetTaskContext(ctx context.Context, req *gomcp.CallToolRe
 
 				invariants := make([]factItem, 0)
 				for _, f := range facts {
-					if f.Category == models.CategoryBehavior || f.Category == models.CategoryConstraint {
+					if f.Category == models.CategoryBehavior || f.Category == models.CategoryConstraint || f.Category == models.CategoryContract {
 						invariants = append(invariants, factItem{
 							Claim:      f.Claim,
 							Dimension:  f.Dimension,
@@ -1206,11 +1208,21 @@ func toEntitySummary(e *models.Entity) entitySummary {
 	if e.Summary != nil {
 		summary = *e.Summary
 	}
+	sig := ""
+	if e.Signature != nil {
+		sig = *e.Signature
+	}
+	returns := ""
+	if e.TypeRef != nil {
+		returns = *e.TypeRef
+	}
 	return entitySummary{
 		Name:         e.Name,
 		Kind:         e.Kind,
 		Path:         entityPath(e),
 		Summary:      summary,
+		Signature:    sig,
+		Returns:      returns,
 		Capabilities: e.Capabilities,
 		Assumptions:  e.Assumptions,
 	}

@@ -323,12 +323,31 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 		return nil, fmt.Errorf("parsing response after %d attempts: %w\n  raw preview: %s", maxParseAttempts, err, preview)
 	}
 
-	log.Printf("[phase2] %s: extracted %d entities, %d facts, %d relationships",
-		job.Target, len(result.Entities), len(result.Facts), len(result.Relationships))
+	// Build sets of entity names that have facts or relationships in the LLM response.
+	// Methods (qualified_name contains ".") with no facts AND no relationships are skipped —
+	// they're hollow shells the LLM listed but didn't write about. Top-level entities
+	// (types, modules, traits) are always created for structural completeness.
+	referencedEntities := make(map[string]bool)
+	for _, f := range result.Facts {
+		referencedEntities[f.EntityName] = true
+	}
+	for _, r := range result.Relationships {
+		referencedEntities[r.From] = true
+		referencedEntities[r.To] = true
+	}
 
 	// Store entities with dedup
 	entityMap := make(map[string]uuid.UUID) // qualified_name -> entity ID
+	skippedMethods := 0
 	for _, ext := range result.Entities {
+		// Skip methods with no facts and no relationships
+		isMethod := strings.Contains(ext.QualifiedName, ".") &&
+			strings.Contains(ext.QualifiedName, "::")
+		if isMethod && !referencedEntities[ext.QualifiedName] {
+			skippedMethods++
+			logVerboseF("[phase2] %s: entity %q → SKIP (method with no facts/relationships)", job.Target, ext.QualifiedName)
+			continue
+		}
 		// Check for existing entity by qualified_name
 		existing, _ := entityStore.FindByQualifiedName(ctx, cfg.RepoID, ext.QualifiedName)
 		if existing != nil {
@@ -410,6 +429,36 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 		entityMap[ext.QualifiedName] = entity.ID
 		stats.EntitiesCreated++
 		logVerboseF("[phase2] %s: entity %q → INSERT (no existing match)", job.Target, ext.QualifiedName)
+	}
+
+	// Populate entity signatures from ctags roster
+	for _, re := range cfg.Roster {
+		if re.Path != job.Target || re.Signature == "" {
+			continue
+		}
+		eid, ok := entityMap[re.QualifiedName]
+		if !ok {
+			continue
+		}
+		e, err := entityStore.GetByID(ctx, eid)
+		if err != nil || e == nil {
+			continue
+		}
+		if e.Signature == nil || *e.Signature == "" {
+			e.Signature = models.Ptr(re.Signature)
+			if re.TypeRef != "" {
+				e.TypeRef = models.Ptr(re.TypeRef)
+			}
+			entityStore.Update(ctx, e)
+		}
+	}
+
+	if skippedMethods > 0 {
+		log.Printf("[phase2] %s: extracted %d entities (%d methods skipped), %d facts, %d relationships",
+			job.Target, len(result.Entities)-skippedMethods, skippedMethods, len(result.Facts), len(result.Relationships))
+	} else {
+		log.Printf("[phase2] %s: extracted %d entities, %d facts, %d relationships",
+			job.Target, len(result.Entities), len(result.Facts), len(result.Relationships))
 	}
 
 	// Store file summary as a fact on the first entity in this file

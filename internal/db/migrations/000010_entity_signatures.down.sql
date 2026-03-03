@@ -1,0 +1,2 @@
+ALTER TABLE entities DROP COLUMN IF EXISTS signature;
+ALTER TABLE entities DROP COLUMN IF EXISTS typeref;

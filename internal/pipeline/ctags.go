@@ -17,6 +17,8 @@ type CtagsSymbol struct {
 	Kind      string `json:"kind"`
 	Scope     string `json:"scope"`
 	ScopeKind string `json:"scopeKind"`
+	Signature string `json:"signature"`
+	TypeRef   string `json:"typeref"`
 }
 
 // EntityEntry is a canonical entity name derived from ctags output.
@@ -26,6 +28,8 @@ type EntityEntry struct {
 	Kind          string // ctags kind: "class", "function", "interface", etc.
 	Path          string // Relative file path
 	Line          int
+	Signature     string // e.g. "(ctx context.Context, cfg Config)"
+	TypeRef       string // e.g. "typename:(*Stats, error)"
 }
 
 // ctagsRawEntry matches the JSON output of `ctags --output-format=json`.
@@ -37,6 +41,8 @@ type ctagsRawEntry struct {
 	Kind      string `json:"kind"`
 	Scope     string `json:"scope"`
 	ScopeKind string `json:"scopeKind"`
+	Signature string `json:"signature"`
+	TypeRef   string `json:"typeref"`
 }
 
 // topLevelKinds are the ctags kinds we consider top-level entities.
@@ -90,7 +96,7 @@ func RunCtags(repoPath string) (map[string][]CtagsSymbol, error) {
 	// Run ctags with JSON output, all fields including scope
 	cmd := exec.Command(ctagsBin,
 		"--output-format=json",
-		"--fields=+nKS+l",  // line number, Kind (full), Scope, language
+		"--fields=+nKS+l+S+t", // line number, Kind (full), Scope, language, Signature, typeref
 		"--extras=-F",       // no file-scope tags (reduces noise)
 		"--recurse",
 		"--exclude=.git",
@@ -158,6 +164,8 @@ func RunCtags(repoPath string) (map[string][]CtagsSymbol, error) {
 			Kind:      entry.Kind,
 			Scope:     entry.Scope,
 			ScopeKind: entry.ScopeKind,
+			Signature: entry.Signature,
+			TypeRef:   entry.TypeRef,
 		}
 		result[relPath] = append(result[relPath], sym)
 	}
@@ -179,6 +187,8 @@ func BuildEntityRoster(symbols map[string][]CtagsSymbol) []EntityEntry {
 				Kind:          sym.Kind,
 				Path:          sym.Path,
 				Line:          sym.Line,
+				Signature:     sym.Signature,
+				TypeRef:       sym.TypeRef,
 			})
 		}
 	}
@@ -295,7 +305,15 @@ func FormatRosterForPrompt(roster []EntityEntry, filePath string) string {
 			sb.WriteString(fmt.Sprintf("... and %d more entities\n", remaining))
 			break
 		}
-		sb.WriteString(fmt.Sprintf("- %s (%s, %s:%d)\n", e.QualifiedName, e.Kind, e.Path, e.Line))
+		if e.Signature != "" {
+			returns := ""
+			if e.TypeRef != "" {
+				returns = " returns " + e.TypeRef
+			}
+			sb.WriteString(fmt.Sprintf("- %s (%s, %s:%d) → %s%s\n", e.QualifiedName, e.Kind, e.Path, e.Line, e.Signature, returns))
+		} else {
+			sb.WriteString(fmt.Sprintf("- %s (%s, %s:%d)\n", e.QualifiedName, e.Kind, e.Path, e.Line))
+		}
 		count++
 	}
 
@@ -303,7 +321,15 @@ func FormatRosterForPrompt(roster []EntityEntry, filePath string) string {
 	if len(fileEntities) > 0 {
 		sb.WriteString(fmt.Sprintf("\n## Entities in THIS File (%s):\n\n", filePath))
 		for _, e := range fileEntities {
-			sb.WriteString(fmt.Sprintf("- %s (%s, line %d)\n", e.QualifiedName, e.Kind, e.Line))
+			if e.Signature != "" {
+				returns := ""
+				if e.TypeRef != "" {
+					returns = " returns " + e.TypeRef
+				}
+				sb.WriteString(fmt.Sprintf("- %s (%s, line %d) → %s%s\n", e.QualifiedName, e.Kind, e.Line, e.Signature, returns))
+			} else {
+				sb.WriteString(fmt.Sprintf("- %s (%s, line %d)\n", e.QualifiedName, e.Kind, e.Line))
+			}
 		}
 		sb.WriteString("\nUse these exact qualified_names for entities in this file.\n")
 	}

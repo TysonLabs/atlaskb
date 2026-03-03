@@ -41,7 +41,7 @@ Respond with JSON in this exact schema:
       "entity_name": "which entity this fact is about (qualified_name)",
       "claim": "a specific, grounded claim",
       "dimension": "what|how|why|when",
-      "category": "behavior|constraint|pattern|convention|debt|risk",
+      "category": "behavior|constraint|pattern|convention|debt|risk|contract",
       "confidence": "high|medium|low"
     }
   ],
@@ -160,6 +160,17 @@ FACT RULES:
   Comments often explain "why" decisions were made and operational constraints.
 - CONFIG FILES — if the file is a config file (YAML, TOML, INI, JSON, .env), extract
   every meaningful configuration key as a fact with its default value and purpose.
+
+CONTRACT FACTS (category: "contract") — CRITICAL for code generation:
+- IMPORT PATHS: For each external dependency used in this file, emit a "contract" fact:
+  Example: "Imports github.com/jackc/pgx/v5/pgxpool for database connection pooling"
+- CONSTRUCTOR PATTERNS: How to instantiate each type:
+  Example: "Created via NewServer(cfg *Config, pool *pgxpool.Pool) *Server"
+- ERROR RETURN PATTERNS: What errors a function can return:
+  Example: "Returns ErrNotFound when entity doesn't exist, wraps DB errors with fmt.Errorf"
+- CONFIG ACCESS: What config keys/env vars this entity reads:
+  Example: "Reads DATABASE_URL from environment, falls back to config.toml [database] section"
+
 - Prefer specific claims with concrete values over vague descriptions.
   BAD:  "Uses a retry mechanism"
   GOOD: "Retries failed deliveries up to 5 times with exponential backoff (1s, 2s, 4s, 8s, 16s)"
@@ -263,7 +274,9 @@ Perfect extraction:
     {"entity_name": "worker::NewManager", "claim": "Initializes an empty worker map and configures the HTTP client with httpTimeout", "dimension": "what", "category": "behavior", "confidence": "high"},
     {"entity_name": "worker::NewManager", "claim": "Uses dependency injection — accepts *AppConfig and *log.Logger", "dimension": "how", "category": "pattern", "confidence": "high"},
     {"entity_name": "worker::NewManager", "claim": "Constructor creates the http.Client inline rather than accepting it as a parameter", "dimension": "how", "category": "behavior", "confidence": "high"},
-    {"entity_name": "worker::NewManager", "claim": "Does not perform any validation on the config parameter", "dimension": "how", "category": "risk", "confidence": "medium"}
+    {"entity_name": "worker::NewManager", "claim": "Does not perform any validation on the config parameter", "dimension": "how", "category": "risk", "confidence": "medium"},
+    {"entity_name": "worker::NewManager", "claim": "Created via NewManager(cfg *AppConfig, logger *log.Logger) *Manager — constructor accepts config and logger", "dimension": "what", "category": "contract", "confidence": "high"},
+    {"entity_name": "worker::Manager", "claim": "Imports time, net/http, log from standard library", "dimension": "how", "category": "contract", "confidence": "high"}
   ],
   "relationships": [
     {"from": "worker::Manager", "to": "worker::Manager.Run", "kind": "owns", "description": "Run is a method on Manager", "strength": "strong"},
@@ -383,12 +396,17 @@ Respond with JSON in this exact schema:
     {
       "category": "error_handling|testing|naming|logging|other",
       "description": "description of the convention",
-      "examples": ["example snippets or references"]
+      "examples": ["concrete code example a developer could copy-paste as a template"]
     }
   ],
   "risks_and_debt": ["list of identified risks or tech debt"],
   "key_integration_points": ["list of external dependencies and how they're used"]
-}`, repoName, entitySummaries, architecturalFacts, decisions)
+}
+
+CONVENTION RULES:
+For each convention, include at least one CONCRETE code example that a developer could
+copy-paste as a template. Not "uses dependency injection" but:
+"All handlers accept (w http.ResponseWriter, r *http.Request) and call s.respond(w, data, err)"`, repoName, entitySummaries, architecturalFacts, decisions)
 }
 
 const systemPromptPhase3 = `You are a code historian extracting architectural decisions from GitHub pull request discussions. PR descriptions and review comments are the richest source of "why" — they capture the rationale, alternatives considered, and tradeoffs that are rarely documented in code.
@@ -415,7 +433,7 @@ Respond with JSON in this exact schema:
       "entity_name": "qualified_name of the affected entity (or repo name if repo-level)",
       "claim": "what was decided/changed and why",
       "dimension": "why|when|what|how",
-      "category": "behavior|constraint|pattern|convention|debt|risk",
+      "category": "behavior|constraint|pattern|convention|debt|risk|contract",
       "confidence": "high|medium|low"
     }
   ],

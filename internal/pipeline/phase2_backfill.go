@@ -45,7 +45,7 @@ Respond with JSON:
       "entity_name": "exact qualified_name from list above",
       "claim": "a specific, grounded claim about this entity",
       "dimension": "what|how|why",
-      "category": "behavior|constraint|pattern|convention|debt|risk",
+      "category": "behavior|constraint|pattern|convention|debt|risk|contract",
       "confidence": "high|medium|low"
     }
   ],
@@ -68,6 +68,9 @@ RULES:
 - Extract specific numeric values: timeouts, pool sizes, retry counts, buffer sizes, intervals.
 - Extract lifecycle patterns: init → run → cleanup sequences, state transitions.
 - Extract facts from comments — comments often explain "why" and operational constraints.
+- Extract CONTRACT facts (category "contract"): import paths, constructor patterns, error return patterns.
+  Example: "Created via NewServer(cfg *Config, pool *pgxpool.Pool) *Server"
+  Example: "Imports github.com/jackc/pgx/v5/pgxpool for database connection pooling"
 - Generate at least 1 relationship per entity (e.g. "owns" from parent type to method).
 - Use ONLY the exact qualified_names listed above for entity_name.
 - For relationship targets, you may reference any entity in the codebase.`, filePath, language, content, nameList)

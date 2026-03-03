@@ -20,9 +20,9 @@ func (s *EntityStore) Create(ctx context.Context, e *Entity) error {
 	e.UpdatedAt = e.CreatedAt
 
 	_, err := s.Pool.Exec(ctx,
-		`INSERT INTO entities (id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, name_normalized, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		e.ID, e.RepoID, e.Kind, e.Name, e.QualifiedName, e.Path, e.Summary, e.Capabilities, e.Assumptions, NormalizeName(e.Name), e.CreatedAt, e.UpdatedAt,
+		`INSERT INTO entities (id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, name_normalized, signature, typeref, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		e.ID, e.RepoID, e.Kind, e.Name, e.QualifiedName, e.Path, e.Summary, e.Capabilities, e.Assumptions, NormalizeName(e.Name), e.Signature, e.TypeRef, e.CreatedAt, e.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting entity: %w", err)
@@ -33,16 +33,18 @@ func (s *EntityStore) Create(ctx context.Context, e *Entity) error {
 func (s *EntityStore) Upsert(ctx context.Context, e *Entity) error {
 	now := time.Now()
 	err := s.Pool.QueryRow(ctx,
-		`INSERT INTO entities (id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, name_normalized, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		`INSERT INTO entities (id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, name_normalized, signature, typeref, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		 ON CONFLICT (repo_id, qualified_name) DO UPDATE SET
 		   summary = COALESCE(EXCLUDED.summary, entities.summary),
 		   capabilities = EXCLUDED.capabilities,
 		   assumptions = EXCLUDED.assumptions,
 		   name_normalized = EXCLUDED.name_normalized,
+		   signature = COALESCE(EXCLUDED.signature, entities.signature),
+		   typeref = COALESCE(EXCLUDED.typeref, entities.typeref),
 		   updated_at = EXCLUDED.updated_at
 		 RETURNING id`,
-		uuid.New(), e.RepoID, e.Kind, e.Name, e.QualifiedName, e.Path, e.Summary, e.Capabilities, e.Assumptions, NormalizeName(e.Name), now, now,
+		uuid.New(), e.RepoID, e.Kind, e.Name, e.QualifiedName, e.Path, e.Summary, e.Capabilities, e.Assumptions, NormalizeName(e.Name), e.Signature, e.TypeRef, now, now,
 	).Scan(&e.ID)
 	if err != nil {
 		return fmt.Errorf("upserting entity: %w", err)
@@ -53,7 +55,7 @@ func (s *EntityStore) Upsert(ctx context.Context, e *Entity) error {
 
 func (s *EntityStore) FindByNameAndKind(ctx context.Context, repoID uuid.UUID, name, kind string) ([]Entity, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, signature, typeref, created_at, updated_at
 		 FROM entities WHERE repo_id = $1 AND name = $2 AND kind = $3`, repoID, name, kind,
 	)
 	if err != nil {
@@ -64,7 +66,7 @@ func (s *EntityStore) FindByNameAndKind(ctx context.Context, repoID uuid.UUID, n
 	var entities []Entity
 	for rows.Next() {
 		var e Entity
-		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.Signature, &e.TypeRef, &e.CreatedAt, &e.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning entity: %w", err)
 		}
 		entities = append(entities, e)
@@ -74,7 +76,7 @@ func (s *EntityStore) FindByNameAndKind(ctx context.Context, repoID uuid.UUID, n
 
 func (s *EntityStore) FindByName(ctx context.Context, repoID uuid.UUID, name string) ([]Entity, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, signature, typeref, created_at, updated_at
 		 FROM entities WHERE repo_id = $1 AND name = $2`, repoID, name,
 	)
 	if err != nil {
@@ -85,7 +87,7 @@ func (s *EntityStore) FindByName(ctx context.Context, repoID uuid.UUID, name str
 	var entities []Entity
 	for rows.Next() {
 		var e Entity
-		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.Signature, &e.TypeRef, &e.CreatedAt, &e.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning entity: %w", err)
 		}
 		entities = append(entities, e)
@@ -96,8 +98,8 @@ func (s *EntityStore) FindByName(ctx context.Context, repoID uuid.UUID, name str
 func (s *EntityStore) Update(ctx context.Context, e *Entity) error {
 	e.UpdatedAt = time.Now()
 	_, err := s.Pool.Exec(ctx,
-		`UPDATE entities SET summary = $2, capabilities = $3, assumptions = $4, updated_at = $5 WHERE id = $1`,
-		e.ID, e.Summary, e.Capabilities, e.Assumptions, e.UpdatedAt,
+		`UPDATE entities SET summary = $2, capabilities = $3, assumptions = $4, signature = COALESCE($5, signature), typeref = COALESCE($6, typeref), updated_at = $7 WHERE id = $1`,
+		e.ID, e.Summary, e.Capabilities, e.Assumptions, e.Signature, e.TypeRef, e.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("updating entity: %w", err)
@@ -108,9 +110,9 @@ func (s *EntityStore) Update(ctx context.Context, e *Entity) error {
 func (s *EntityStore) GetByID(ctx context.Context, id uuid.UUID) (*Entity, error) {
 	e := &Entity{}
 	err := s.Pool.QueryRow(ctx,
-		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, signature, typeref, created_at, updated_at
 		 FROM entities WHERE id = $1`, id,
-	).Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt)
+	).Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.Signature, &e.TypeRef, &e.CreatedAt, &e.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -126,7 +128,7 @@ func (s *EntityStore) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]Entity, 
 		return nil, nil
 	}
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, signature, typeref, created_at, updated_at
 		 FROM entities WHERE id = ANY($1)`, ids,
 	)
 	if err != nil {
@@ -137,7 +139,7 @@ func (s *EntityStore) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]Entity, 
 	var entities []Entity
 	for rows.Next() {
 		var e Entity
-		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.Signature, &e.TypeRef, &e.CreatedAt, &e.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning entity: %w", err)
 		}
 		entities = append(entities, e)
@@ -147,7 +149,7 @@ func (s *EntityStore) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]Entity, 
 
 func (s *EntityStore) ListByRepo(ctx context.Context, repoID uuid.UUID) ([]Entity, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, signature, typeref, created_at, updated_at
 		 FROM entities WHERE repo_id = $1 ORDER BY qualified_name`, repoID,
 	)
 	if err != nil {
@@ -158,7 +160,7 @@ func (s *EntityStore) ListByRepo(ctx context.Context, repoID uuid.UUID) ([]Entit
 	var entities []Entity
 	for rows.Next() {
 		var e Entity
-		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.Signature, &e.TypeRef, &e.CreatedAt, &e.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning entity: %w", err)
 		}
 		entities = append(entities, e)
@@ -168,7 +170,7 @@ func (s *EntityStore) ListByRepo(ctx context.Context, repoID uuid.UUID) ([]Entit
 
 func (s *EntityStore) ListByRepoAndKind(ctx context.Context, repoID uuid.UUID, kind string) ([]Entity, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, signature, typeref, created_at, updated_at
 		 FROM entities WHERE repo_id = $1 AND kind = $2 ORDER BY qualified_name`, repoID, kind,
 	)
 	if err != nil {
@@ -179,7 +181,7 @@ func (s *EntityStore) ListByRepoAndKind(ctx context.Context, repoID uuid.UUID, k
 	var entities []Entity
 	for rows.Next() {
 		var e Entity
-		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.Signature, &e.TypeRef, &e.CreatedAt, &e.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning entity: %w", err)
 		}
 		entities = append(entities, e)
@@ -190,9 +192,9 @@ func (s *EntityStore) ListByRepoAndKind(ctx context.Context, repoID uuid.UUID, k
 func (s *EntityStore) FindByQualifiedName(ctx context.Context, repoID uuid.UUID, qualifiedName string) (*Entity, error) {
 	e := &Entity{}
 	err := s.Pool.QueryRow(ctx,
-		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, signature, typeref, created_at, updated_at
 		 FROM entities WHERE repo_id = $1 AND qualified_name = $2`, repoID, qualifiedName,
-	).Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt)
+	).Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.Signature, &e.TypeRef, &e.CreatedAt, &e.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -205,7 +207,7 @@ func (s *EntityStore) FindByQualifiedName(ctx context.Context, repoID uuid.UUID,
 // ListOrphans returns entities that have no facts (orphaned entities).
 func (s *EntityStore) ListOrphans(ctx context.Context, repoID uuid.UUID) ([]Entity, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT e.id, e.repo_id, e.kind, e.name, e.qualified_name, e.path, e.summary, e.capabilities, e.assumptions, e.created_at, e.updated_at
+		`SELECT e.id, e.repo_id, e.kind, e.name, e.qualified_name, e.path, e.summary, e.capabilities, e.assumptions, e.signature, e.typeref, e.created_at, e.updated_at
 		 FROM entities e
 		 LEFT JOIN facts f ON f.entity_id = e.id AND f.superseded_by IS NULL
 		 WHERE e.repo_id = $1 AND e.path IS NOT NULL AND f.id IS NULL
@@ -219,7 +221,7 @@ func (s *EntityStore) ListOrphans(ctx context.Context, repoID uuid.UUID) ([]Enti
 	var entities []Entity
 	for rows.Next() {
 		var e Entity
-		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.Signature, &e.TypeRef, &e.CreatedAt, &e.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning orphan entity: %w", err)
 		}
 		entities = append(entities, e)
@@ -230,7 +232,7 @@ func (s *EntityStore) ListOrphans(ctx context.Context, repoID uuid.UUID) ([]Enti
 // ListWithoutRelationships returns entities that have no relationships (isolated entities).
 func (s *EntityStore) ListWithoutRelationships(ctx context.Context, repoID uuid.UUID) ([]Entity, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT e.id, e.repo_id, e.kind, e.name, e.qualified_name, e.path, e.summary, e.capabilities, e.assumptions, e.created_at, e.updated_at
+		`SELECT e.id, e.repo_id, e.kind, e.name, e.qualified_name, e.path, e.summary, e.capabilities, e.assumptions, e.signature, e.typeref, e.created_at, e.updated_at
 		 FROM entities e
 		 LEFT JOIN relationships r1 ON r1.from_entity_id = e.id
 		 LEFT JOIN relationships r2 ON r2.to_entity_id = e.id
@@ -245,7 +247,7 @@ func (s *EntityStore) ListWithoutRelationships(ctx context.Context, repoID uuid.
 	var entities []Entity
 	for rows.Next() {
 		var e Entity
-		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.Signature, &e.TypeRef, &e.CreatedAt, &e.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning entity: %w", err)
 		}
 		entities = append(entities, e)
@@ -300,9 +302,9 @@ func (s *EntityStore) CountWithRelationships(ctx context.Context, repoID uuid.UU
 func (s *EntityStore) FindByPath(ctx context.Context, repoID uuid.UUID, path string) (*Entity, error) {
 	e := &Entity{}
 	err := s.Pool.QueryRow(ctx,
-		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, signature, typeref, created_at, updated_at
 		 FROM entities WHERE repo_id = $1 AND path = $2`, repoID, path,
-	).Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt)
+	).Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.Signature, &e.TypeRef, &e.CreatedAt, &e.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -318,9 +320,9 @@ func (s *EntityStore) FindByPathSuffix(ctx context.Context, repoID uuid.UUID, su
 	e := &Entity{}
 	pattern := "%/" + suffix
 	err := s.Pool.QueryRow(ctx,
-		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, signature, typeref, created_at, updated_at
 		 FROM entities WHERE repo_id = $1 AND path LIKE $2 LIMIT 1`, repoID, pattern,
-	).Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt)
+	).Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.Signature, &e.TypeRef, &e.CreatedAt, &e.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -334,7 +336,7 @@ func (s *EntityStore) FindByPathSuffix(ctx context.Context, repoID uuid.UUID, su
 func (s *EntityStore) ListByPathSuffix(ctx context.Context, repoID uuid.UUID, suffix string) ([]Entity, error) {
 	pattern := "%/" + suffix
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, signature, typeref, created_at, updated_at
 		 FROM entities WHERE repo_id = $1 AND path LIKE $2`, repoID, pattern)
 	if err != nil {
 		return nil, fmt.Errorf("listing entities by path suffix: %w", err)
@@ -343,7 +345,7 @@ func (s *EntityStore) ListByPathSuffix(ctx context.Context, repoID uuid.UUID, su
 	var entities []Entity
 	for rows.Next() {
 		var e Entity
-		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.Signature, &e.TypeRef, &e.CreatedAt, &e.UpdatedAt); err != nil {
 			return nil, err
 		}
 		entities = append(entities, e)
@@ -415,7 +417,7 @@ func (s *EntityStore) SearchByName(ctx context.Context, repoID *uuid.UUID, query
 	}
 
 	sql := fmt.Sprintf(
-		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, signature, typeref, created_at, updated_at
 		 FROM entities %s ORDER BY qualified_name LIMIT $%d OFFSET $%d`, where, argIdx, argIdx+1)
 	args = append(args, limit, offset)
 
@@ -428,7 +430,7 @@ func (s *EntityStore) SearchByName(ctx context.Context, repoID *uuid.UUID, query
 	var entities []Entity
 	for rows.Next() {
 		var e Entity
-		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.Signature, &e.TypeRef, &e.CreatedAt, &e.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning entity: %w", err)
 		}
 		entities = append(entities, e)
@@ -469,7 +471,7 @@ func (s *EntityStore) SearchFuzzy(ctx context.Context, name string, repoID *uuid
 	}
 
 	query := fmt.Sprintf(
-		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, created_at, updated_at,
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, signature, typeref, created_at, updated_at,
 		        similarity(name_normalized, $1) AS sim
 		 FROM entities %s
 		 ORDER BY sim DESC LIMIT $%d`, where, argIdx)
@@ -485,7 +487,7 @@ func (s *EntityStore) SearchFuzzy(ctx context.Context, name string, repoID *uuid
 	for rows.Next() {
 		var ews EntityWithSimilarity
 		if err := rows.Scan(&ews.ID, &ews.RepoID, &ews.Kind, &ews.Name, &ews.QualifiedName, &ews.Path,
-			&ews.Summary, &ews.Capabilities, &ews.Assumptions, &ews.CreatedAt, &ews.UpdatedAt, &ews.Similarity); err != nil {
+			&ews.Summary, &ews.Capabilities, &ews.Assumptions, &ews.Signature, &ews.TypeRef, &ews.CreatedAt, &ews.UpdatedAt, &ews.Similarity); err != nil {
 			return nil, fmt.Errorf("scanning fuzzy entity: %w", err)
 		}
 		results = append(results, ews)
