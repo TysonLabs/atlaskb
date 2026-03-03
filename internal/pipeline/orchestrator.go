@@ -589,6 +589,18 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		indexingRun.QualityParseRate = models.Ptr(qs.ParseSuccessRate)
 	}
 
+	// Generate repo overview
+	fmt.Println("Generating repo overview...")
+	cfg.progress("Generating repo overview...")
+	overview, err := GenerateOverview(ctx, cfg.Pool, repo.ID, repoName)
+	if err != nil {
+		fmt.Printf("  Warning: overview generation failed: %v\n", err)
+	} else {
+		if err := repoStore.UpdateOverview(ctx, repo.ID, overview); err != nil {
+			fmt.Printf("  Warning: saving overview failed: %v\n", err)
+		}
+	}
+
 	// Update repo record
 	repoStore.UpdateLastIndexed(ctx, repo.ID, repoInfo.HeadCommitSHA)
 
@@ -636,6 +648,36 @@ func generateEmbeddings(ctx context.Context, pool *pgxpool.Pool, embedder embedd
 			vec := pgvector.NewVector(vectors[i])
 			if err := factStore.UpdateEmbedding(ctx, f.ID, vec); err != nil {
 				logVerboseF("warn: updating embedding for fact %s: %v", f.ID, err)
+			}
+		}
+	}
+
+	// Entity summary embeddings
+	entityStore := &models.EntityStore{Pool: pool}
+	entities, err := entityStore.ListByRepoWithoutSummaryEmbedding(ctx, repoID)
+	if err != nil {
+		return fmt.Errorf("listing entities without summary embedding: %w", err)
+	}
+
+	if len(entities) > 0 {
+		fmt.Printf("  Embedding %d entity summaries...\n", len(entities))
+
+		summaries := make([]string, len(entities))
+		for i, e := range entities {
+			summaries[i] = *e.Summary
+		}
+
+		summaryVectors, err := embedder.Embed(ctx, summaries, embeddings.DefaultModel)
+		if err != nil {
+			return fmt.Errorf("embedding entity summaries: %w", err)
+		}
+
+		for i, e := range entities {
+			if i < len(summaryVectors) && len(summaryVectors[i]) > 0 {
+				vec := pgvector.NewVector(summaryVectors[i])
+				if err := entityStore.UpdateSummaryEmbedding(ctx, e.ID, vec); err != nil {
+					logVerboseF("warn: updating summary embedding for entity %s: %v", e.ID, err)
+				}
 			}
 		}
 	}

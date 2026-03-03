@@ -33,11 +33,11 @@ func (s *RepoStore) Create(ctx context.Context, r *Repo) error {
 	return nil
 }
 
-const repoColumns = `id, name, remote_url, local_path, default_branch, exclude_dirs, last_commit_sha, last_indexed_at, created_at, updated_at`
+const repoColumns = `id, name, remote_url, local_path, default_branch, exclude_dirs, last_commit_sha, last_indexed_at, overview, created_at, updated_at`
 
 func scanRepo(row pgx.Row) (*Repo, error) {
 	r := &Repo{}
-	err := row.Scan(&r.ID, &r.Name, &r.RemoteURL, &r.LocalPath, &r.DefaultBranch, &r.ExcludeDirs, &r.LastCommitSHA, &r.LastIndexedAt, &r.CreatedAt, &r.UpdatedAt)
+	err := row.Scan(&r.ID, &r.Name, &r.RemoteURL, &r.LocalPath, &r.DefaultBranch, &r.ExcludeDirs, &r.LastCommitSHA, &r.LastIndexedAt, &r.Overview, &r.CreatedAt, &r.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -88,7 +88,7 @@ func (s *RepoStore) List(ctx context.Context) ([]Repo, error) {
 	var repos []Repo
 	for rows.Next() {
 		var r Repo
-		if err := rows.Scan(&r.ID, &r.Name, &r.RemoteURL, &r.LocalPath, &r.DefaultBranch, &r.ExcludeDirs, &r.LastCommitSHA, &r.LastIndexedAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.RemoteURL, &r.LocalPath, &r.DefaultBranch, &r.ExcludeDirs, &r.LastCommitSHA, &r.LastIndexedAt, &r.Overview, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning repo: %w", err)
 		}
 		if r.ExcludeDirs == nil {
@@ -122,6 +122,17 @@ func (s *RepoStore) UpdateLastIndexed(ctx context.Context, id uuid.UUID, commitS
 	)
 	if err != nil {
 		return fmt.Errorf("updating repo last indexed: %w", err)
+	}
+	return nil
+}
+
+func (s *RepoStore) UpdateOverview(ctx context.Context, id uuid.UUID, overview string) error {
+	_, err := s.Pool.Exec(ctx,
+		`UPDATE repos SET overview = $2, updated_at = now() WHERE id = $1`,
+		id, overview,
+	)
+	if err != nil {
+		return fmt.Errorf("updating repo overview: %w", err)
 	}
 	return nil
 }

@@ -7,6 +7,7 @@ export interface Repo {
   exclude_dirs: string[];
   last_commit_sha?: string;
   last_indexed_at?: string;
+  overview?: string;
   created_at: string;
   updated_at: string;
 }

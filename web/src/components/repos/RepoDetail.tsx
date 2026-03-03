@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
+import ReactMarkdown from "react-markdown";
 import { api } from "../../api/client";
 import type { RepoDetail as RepoDetailType, IndexingRun, Decision } from "../../types";
 import { ArrowLeft, X, AlertTriangle, Trash2, RefreshCw, Loader2 } from "lucide-react";
@@ -10,7 +11,7 @@ export function RepoDetail() {
   const [repo, setRepo] = useState<RepoDetailType | null>(null);
   const [runs, setRuns] = useState<IndexingRun[]>([]);
   const [decisions, setDecisions] = useState<Decision[]>([]);
-  const [tab, setTab] = useState<"quality" | "history" | "decisions" | "settings">("quality");
+  const [tab, setTab] = useState<"overview" | "quality" | "history" | "decisions" | "settings">("overview");
   const [indexing, setIndexing] = useState<{ status: string; logs: string[] }>({ status: "idle", logs: [] });
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -141,7 +142,7 @@ export function RepoDetail() {
       {/* Tabs */}
       <div className="border-b border-edge mb-4">
         <div className="flex gap-4">
-          {(["quality", "history", "decisions", "settings"] as const).map((t) => (
+          {(["overview", "quality", "history", "decisions", "settings"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -149,11 +150,23 @@ export function RepoDetail() {
                 tab === t ? "border-accent text-accent" : "border-transparent text-foreground-secondary hover:text-foreground"
               }`}
             >
-              {t === "quality" ? "Quality Breakdown" : t === "history" ? "Indexing History" : t === "decisions" ? `Decisions (${decisions.length})` : "Settings"}
+              {t === "overview" ? "Overview" : t === "quality" ? "Quality Breakdown" : t === "history" ? "Indexing History" : t === "decisions" ? `Decisions (${decisions.length})` : "Settings"}
             </button>
           ))}
         </div>
       </div>
+
+      {tab === "overview" && (
+        <div className="bg-surface-elevated rounded-lg border border-edge p-6">
+          {repo.overview ? (
+            <div className="prose prose-sm max-w-none">
+              <ReactMarkdown>{repo.overview}</ReactMarkdown>
+            </div>
+          ) : (
+            <p className="text-sm text-foreground-secondary">No overview yet — run indexing to generate.</p>
+          )}
+        </div>
+      )}
 
       {tab === "quality" && (
         <div className="bg-surface-elevated rounded-lg border border-edge p-4">

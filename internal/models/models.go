@@ -98,26 +98,28 @@ type Repo struct {
 	ExcludeDirs   []string   `json:"exclude_dirs"`
 	LastCommitSHA *string    `json:"last_commit_sha,omitempty"`
 	LastIndexedAt *time.Time `json:"last_indexed_at,omitempty"`
+	Overview      *string    `json:"overview,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 type Entity struct {
-	ID            uuid.UUID `json:"id"`
-	RepoID        uuid.UUID `json:"repo_id"`
-	Kind          string    `json:"kind"`
-	Name          string    `json:"name"`
-	QualifiedName string    `json:"qualified_name"`
-	Path          *string   `json:"path,omitempty"`
-	Summary       *string   `json:"summary,omitempty"`
-	Capabilities  []string  `json:"capabilities,omitempty"`
-	Assumptions   []string  `json:"assumptions,omitempty"`
-	Signature     *string   `json:"signature,omitempty"`
-	TypeRef       *string   `json:"typeref,omitempty"`
-	StartLine     *int      `json:"start_line,omitempty"`
-	EndLine       *int      `json:"end_line,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID               uuid.UUID       `json:"id"`
+	RepoID           uuid.UUID       `json:"repo_id"`
+	Kind             string          `json:"kind"`
+	Name             string          `json:"name"`
+	QualifiedName    string          `json:"qualified_name"`
+	Path             *string         `json:"path,omitempty"`
+	Summary          *string         `json:"summary,omitempty"`
+	Capabilities     []string        `json:"capabilities,omitempty"`
+	Assumptions      []string        `json:"assumptions,omitempty"`
+	Signature        *string         `json:"signature,omitempty"`
+	TypeRef          *string         `json:"typeref,omitempty"`
+	StartLine        *int            `json:"start_line,omitempty"`
+	EndLine          *int            `json:"end_line,omitempty"`
+	SummaryEmbedding pgvector.Vector `json:"-"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
 }
 
 type Provenance struct {
