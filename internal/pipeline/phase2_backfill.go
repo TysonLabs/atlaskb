@@ -156,19 +156,22 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 				ctxWin = 32768
 			}
 
-			// Dynamic max_tokens based on orphan entity count
-			maxTokens := computeMaxTokens(len(names), ctxWin)
+			// Output budget based on orphan entity count (for content budgeting only)
+			outputBudget := computeOutputBudget(len(names), ctxWin)
 
 			// Truncate content if it would overflow the context window
 			fileContent := string(content)
 			staticPrompt := backfillPrompt(w.path, fi.Language, "", names)
-			maxContentBytes := computeMaxContentBytes(ctxWin, maxTokens, len(systemPromptBackfill)+len(staticPrompt))
+			maxContentBytes := computeMaxContentBytes(ctxWin, outputBudget, len(systemPromptBackfill)+len(staticPrompt))
 			if len(fileContent) > maxContentBytes {
 				log.Printf("[backfill] %s: truncating content from %d to %d bytes", w.path, len(fileContent), maxContentBytes)
 				fileContent = fileContent[:maxContentBytes]
 			}
 
 			prompt := backfillPrompt(w.path, fi.Language, fileContent, names)
+
+			// Use full remaining context window for output tokens
+			maxTokens := maxOutputTokens(ctxWin, len(systemPromptBackfill), len(prompt))
 
 			resp, _, err := callLLMWithRetry(gctx, cfg.LLM, cfg.Model, systemPromptBackfill, []llm.Message{
 				{Role: "user", Content: prompt},
@@ -371,19 +374,22 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 					ctxWin = 32768
 				}
 
-				// Dynamic max_tokens based on orphan entity count
-				maxTokens := computeMaxTokens(len(names), ctxWin)
+				// Output budget based on orphan entity count (for content budgeting only)
+				outputBudget := computeOutputBudget(len(names), ctxWin)
 
 				// Truncate content if it would overflow the context window
 				fileContent := string(content)
 				staticPrompt := backfillPrompt(w.path, fi.Language, "", names)
-				maxContentBytes := computeMaxContentBytes(ctxWin, maxTokens, len(systemPromptBackfill)+len(staticPrompt))
+				maxContentBytes := computeMaxContentBytes(ctxWin, outputBudget, len(systemPromptBackfill)+len(staticPrompt))
 				if len(fileContent) > maxContentBytes {
 					log.Printf("[backfill-rel] %s: truncating content from %d to %d bytes", w.path, len(fileContent), maxContentBytes)
 					fileContent = fileContent[:maxContentBytes]
 				}
 
 				prompt := backfillPrompt(w.path, fi.Language, fileContent, names)
+
+				// Use full remaining context window for output tokens
+				maxTokens := maxOutputTokens(ctxWin, len(systemPromptBackfill), len(prompt))
 
 				resp, _, err := callLLMWithRetry(gctx2, cfg.LLM, cfg.Model, systemPromptBackfill, []llm.Message{
 					{Role: "user", Content: prompt},

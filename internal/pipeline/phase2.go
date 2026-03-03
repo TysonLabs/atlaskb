@@ -45,19 +45,32 @@ func computeMaxContentBytes(contextWindow, maxTokens, staticPromptBytes int) int
 	return contentTokens * bytesPerToken
 }
 
-// computeMaxTokens calculates dynamic max_tokens for the LLM response based on
-// the number of ctags symbols in the file and the model's context window.
+// computeOutputBudget estimates the output tokens needed based on symbol count.
+// Used only for content budgeting (deciding how much file content to include),
+// NOT as the actual max_tokens sent to the LLM.
 // Per-symbol budget: entity (~50 tokens) + 1.5 facts (~60 tokens) +
 // 1 relationship (~30 tokens) = ~140 tokens/symbol. We use 300 with headroom.
-// The cap is 40% of context window — balancing input capacity with output needs.
-func computeMaxTokens(symbolCount, contextWindow int) int {
+func computeOutputBudget(symbolCount, contextWindow int) int {
 	tokens := 4096 + symbolCount*300
 
-	// Cap at 40% of context window — leaves 60% for input (system + file + roster)
+	// Cap at 40% of context window for budgeting purposes
 	cap := contextWindow * 2 / 5
 
 	if tokens > cap {
 		return cap
+	}
+	return tokens
+}
+
+// maxOutputTokens computes the actual max_tokens for the LLM request by
+// subtracting the estimated input size from the context window. This ensures
+// we use the full context window rather than an arbitrary cap.
+func maxOutputTokens(contextWindow, systemPromptBytes, promptBytes int) int {
+	inputTokens := (systemPromptBytes + promptBytes) / bytesPerToken
+	safetyMargin := 256
+	tokens := contextWindow - inputTokens - safetyMargin
+	if tokens < 4096 {
+		tokens = 4096
 	}
 	return tokens
 }
@@ -276,11 +289,11 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 		contextWindow = 32768
 	}
 
-	maxTokens := computeMaxTokens(symbolCount, contextWindow)
+	outputBudget := computeOutputBudget(symbolCount, contextWindow)
 
 	// Measure static prompt overhead (prompt with empty content)
 	staticPrompt := Phase2Prompt(job.Target, fi.Language, cfg.RepoName, cfg.Manifest.Stack, "", cfg.Roster)
-	maxContentBytes := computeMaxContentBytes(contextWindow, maxTokens, len(systemPromptPhase2)+len(staticPrompt))
+	maxContentBytes := computeMaxContentBytes(contextWindow, outputBudget, len(systemPromptPhase2)+len(staticPrompt))
 
 	// Truncate file content if it exceeds the budget
 	fileContent := string(content)
@@ -292,28 +305,25 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 
 	prompt := Phase2Prompt(job.Target, fi.Language, cfg.RepoName, cfg.Manifest.Stack, fileContent, cfg.Roster)
 
-	// Parse retry loop: retry on parse failures with increased max_tokens
+	// Set max_tokens to use the full remaining context window
+	maxTokens := maxOutputTokens(contextWindow, len(systemPromptPhase2), len(prompt))
+
+	// Parse retry loop: retry on parse failures (no need to bump max_tokens since
+	// we already use the full context window)
 	const maxParseAttempts = 3
 	var result *Phase2Result
 	var resp *llm.Response
 	var attempts int
-	currentMaxTokens := maxTokens
-	// Retry cap: allow up to 55% of context window on retries (above the initial 40%)
-	tokensCap := contextWindow * 55 / 100
-	if tokensCap < maxTokens*3/2 {
-		tokensCap = maxTokens * 3 / 2
-	}
 
 	for attempt := 1; attempt <= maxParseAttempts; attempt++ {
 		resp, attempts, err = callLLMWithRetry(ctx, cfg.LLM, cfg.Model, systemPromptPhase2, []llm.Message{
 			{Role: "user", Content: prompt},
-		}, currentMaxTokens, SchemaPhase2, DefaultRetryConfig)
+		}, maxTokens, SchemaPhase2, DefaultRetryConfig)
 		if err != nil {
 			return nil, fmt.Errorf("LLM call: %w", err)
 		}
 
 		// If the response was truncated (hit token limit), try to repair the JSON
-		// rather than just retrying with more tokens (which produces more content and truncates again).
 		truncated := resp.StopReason == "length"
 		if truncated {
 			var repaired bool
@@ -333,23 +343,8 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 		}
 
 		if attempt < maxParseAttempts {
-			if truncated {
-				// Truncation: bump tokens more aggressively (2x instead of 1.5x)
-				newTokens := currentMaxTokens * 2
-				if newTokens > tokensCap {
-					newTokens = tokensCap
-				}
-				log.Printf("[phase2] %s: parse attempt %d/%d failed (truncated, repair failed), bumping max_tokens %d → %d",
-					job.Target, attempt, maxParseAttempts, currentMaxTokens, newTokens)
-				currentMaxTokens = newTokens
-			} else {
-				log.Printf("[phase2] %s: parse attempt %d/%d failed, bumping max_tokens %d → %d",
-					job.Target, attempt, maxParseAttempts, currentMaxTokens, currentMaxTokens*3/2)
-				currentMaxTokens = currentMaxTokens * 3 / 2
-				if currentMaxTokens > tokensCap {
-					currentMaxTokens = tokensCap
-				}
-			}
+			log.Printf("[phase2] %s: parse attempt %d/%d failed: %v, retrying with max_tokens=%d",
+				job.Target, attempt, maxParseAttempts, err, maxTokens)
 		}
 	}
 	if err != nil {

@@ -369,9 +369,11 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 	// Track whether Phase 2 processed any files (for smart update logic)
 	phase2Processed := false
 
-	// Fetch model context window for dynamic token budgeting (used by Phase 2 + Backfill)
+	// Fetch model context window for dynamic token budgeting (used by all LLM phases)
 	contextWindow := 32768
-	if shouldRunPhase(cfg.Phases, "phase2") || shouldRunPhase(cfg.Phases, "backfill") {
+	needsContextWindow := shouldRunPhase(cfg.Phases, "phase2") || shouldRunPhase(cfg.Phases, "backfill") ||
+		shouldRunPhase(cfg.Phases, "phase4") || shouldRunPhase(cfg.Phases, "phase5") || len(cfg.Phases) == 0
+	if needsContextWindow {
 		if cw, err := cfg.LLM.GetContextWindow(ctx, cfg.ExtractionModel); err == nil && cw > 0 {
 			contextWindow = cw
 			log.Printf("[config] model context window: %d tokens", contextWindow)
@@ -555,11 +557,12 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		fmt.Println("Phase 4: Cross-module synthesis...")
 		cfg.progress("Phase 4: Cross-module LLM synthesis...")
 		if err := RunPhase4(ctx, Phase4Config{
-			RepoID:   repo.ID,
-			RepoName: repoName,
-			Model:    cfg.SynthesisModel,
-			Pool:     cfg.Pool,
-			LLM:      cfg.LLM,
+			RepoID:        repo.ID,
+			RepoName:      repoName,
+			Model:         cfg.SynthesisModel,
+			Pool:          cfg.Pool,
+			LLM:           cfg.LLM,
+			ContextWindow: contextWindow,
 		}); err != nil {
 			fmt.Printf("  Warning: phase 4 synthesis failed: %v\n", err)
 		}
@@ -584,11 +587,12 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		fmt.Println("Phase 5: Repository summary...")
 		cfg.progress("Phase 5: Generating repository summary...")
 		if err := RunPhase5(ctx, Phase5Config{
-			RepoID:   repo.ID,
-			RepoName: repoName,
-			Model:    cfg.SynthesisModel,
-			Pool:     cfg.Pool,
-			LLM:      cfg.LLM,
+			RepoID:        repo.ID,
+			RepoName:      repoName,
+			Model:         cfg.SynthesisModel,
+			Pool:          cfg.Pool,
+			LLM:           cfg.LLM,
+			ContextWindow: contextWindow,
 		}); err != nil {
 			fmt.Printf("  Warning: phase 5 summary failed: %v\n", err)
 		}

@@ -13,11 +13,12 @@ import (
 )
 
 type Phase4Config struct {
-	RepoID   uuid.UUID
-	RepoName string
-	Model    string
-	Pool     *pgxpool.Pool
-	LLM      llm.Client
+	RepoID        uuid.UUID
+	RepoName      string
+	Model         string
+	Pool          *pgxpool.Pool
+	LLM           llm.Client
+	ContextWindow int // Model context window in tokens (0 = use default 32768)
 }
 
 func RunPhase4(ctx context.Context, cfg Phase4Config) error {
@@ -110,18 +111,27 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 		sb.WriteString("\n")
 	}
 
-	// Truncate if context is too large (model has 40k context, use ~40%)
+	// Truncate context to leave room for output within the context window.
+	// Reserve ~40% of context for output, use ~60% for input.
+	ctxWin := cfg.ContextWindow
+	if ctxWin <= 0 {
+		ctxWin = 32768
+	}
+	maxContextBytes := ctxWin * bytesPerToken * 55 / 100 // 55% of context for input content
 	context := sb.String()
-	if len(context) > 16000 {
-		context = context[:16000] + "\n\n... (truncated)"
+	if len(context) > maxContextBytes {
+		context = context[:maxContextBytes] + "\n\n... (truncated)"
 	}
 
 	prompt := Phase4Prompt(cfg.RepoName, context)
 
+	// Use full remaining context window for output tokens
+	maxTokens := maxOutputTokens(ctxWin, len(systemPromptPhase4), len(prompt))
+
 	messages := []llm.Message{
 		{Role: "user", Content: prompt},
 	}
-	lastResp, attempts, err := callLLMWithRetry(ctx, cfg.LLM, cfg.Model, systemPromptPhase4, messages, 8192, SchemaPhase4, DefaultRetryConfig)
+	lastResp, attempts, err := callLLMWithRetry(ctx, cfg.LLM, cfg.Model, systemPromptPhase4, messages, maxTokens, SchemaPhase4, DefaultRetryConfig)
 	if err != nil {
 		jobStore.Fail(ctx, claimed.ID, err.Error())
 		return fmt.Errorf("LLM call: %w", err)
