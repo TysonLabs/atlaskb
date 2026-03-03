@@ -37,17 +37,18 @@ type Engine struct {
 
 // scoreTrace tracks how a single result's score was built up.
 type scoreTrace struct {
-	factID     uuid.UUID
-	entityName string
-	base       float64
-	source     string
-	fusion     float64 // bonus from cross-source agreement (0 if none)
-	fusionFrom float64 // the other source's score
+	factID      uuid.UUID
+	entityName  string
+	base        float64
+	source      string
+	fusion      float64 // bonus from cross-source agreement (0 if none)
+	fusionFrom  float64 // the other source's score
 	entityBoost float64 // multiplier from entity-name mention (1.0 if none)
 	entitySim   float64 // similarity that drove the boost
 	confidence  float64 // multiplier
 	kindBias    float64 // multiplier
 	category    float64 // multiplier
+	repoAffinity float64 // multiplier for same-repo boost (1.0 if no repo filter)
 	overlap     float64 // additive bonus
 	final       float64
 }
@@ -69,6 +70,9 @@ func (t scoreTrace) String() string {
 	}
 	if t.category != 1.0 {
 		s += fmt.Sprintf("  cat=×%.2f", t.category)
+	}
+	if t.repoAffinity != 0 && t.repoAffinity != 1.0 {
+		s += fmt.Sprintf("  repo=×%.2f", t.repoAffinity)
 	}
 	if t.overlap > 0 {
 		s += fmt.Sprintf("  overlap=+%.2f", t.overlap)
@@ -382,7 +386,13 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 		}
 	}
 
-	// Post-processing multiplier pass: confidence, entity kind, category, claim overlap
+	// Build target repo set for same-repo boosting
+	targetRepoSet := make(map[uuid.UUID]bool, len(repoIDs))
+	for _, rid := range repoIDs {
+		targetRepoSet[rid] = true
+	}
+
+	// Post-processing multiplier pass: confidence, entity kind, category, claim overlap, repo affinity
 	candidateTokens := extractCandidateTokens(question)
 	for i := range allResults {
 		r := &allResults[i]
@@ -408,6 +418,20 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 			r.Score *= w
 		}
 
+		// Same-repo affinity boost: when user specified target repo(s),
+		// boost results from those repos and penalize cross-repo results.
+		// This ensures the target repo's results surface above noise from
+		// similarly-named entities in other repos.
+		repoW := 1.0
+		if len(targetRepoSet) > 0 {
+			if targetRepoSet[r.Fact.RepoID] {
+				repoW = 1.3 // 30% boost for target repo
+			} else {
+				repoW = 0.6 // 40% penalty for cross-repo
+			}
+			r.Score *= repoW
+		}
+
 		// Claim keyword overlap: +0.05 per matching token, max +0.1
 		claimLower := strings.ToLower(r.Fact.Claim)
 		overlapBonus := 0.0
@@ -425,6 +449,7 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 			traces[i].confidence = confW
 			traces[i].kindBias = kindW
 			traces[i].category = catW
+			traces[i].repoAffinity = repoW
 			traces[i].overlap = overlapBonus
 			traces[i].final = r.Score
 		}

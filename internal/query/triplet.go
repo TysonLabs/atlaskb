@@ -111,6 +111,12 @@ func (e *Engine) SearchTriplets(ctx context.Context, question string, repoIDs []
 		return nil, fmt.Errorf("computing similarity scores: %w", err)
 	}
 
+	// Build target repo set for same-repo boosting
+	targetRepoSet := make(map[uuid.UUID]bool, len(repoIDs))
+	for _, rid := range repoIDs {
+		targetRepoSet[rid] = true
+	}
+
 	// Step 4: Score each relationship as a triplet
 	triplets := make([]ScoredTriplet, 0, len(allRels))
 	for _, r := range allRels {
@@ -136,6 +142,19 @@ func (e *Engine) SearchTriplets(ctx context.Context, question string, repoIDs []
 		relScore := (sourceScore + targetScore) / 2 * strengthMultiplier
 
 		tripletScore := 0.4*sourceScore + 0.2*relScore + 0.4*targetScore
+
+		// Same-repo affinity: boost triplets where both endpoints are in the target repo
+		if len(targetRepoSet) > 0 {
+			sourceInRepo := targetRepoSet[source.RepoID]
+			targetInRepo := targetRepoSet[target.RepoID]
+			if sourceInRepo && targetInRepo {
+				tripletScore *= 1.3
+			} else if sourceInRepo || targetInRepo {
+				tripletScore *= 1.0 // no change for mixed
+			} else {
+				tripletScore *= 0.6 // penalize fully cross-repo
+			}
+		}
 
 		triplets = append(triplets, ScoredTriplet{
 			Source:       source,
