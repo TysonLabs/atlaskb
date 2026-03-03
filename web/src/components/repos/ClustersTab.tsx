@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { FunctionalCluster } from "../../types";
-import { ChevronDown, ChevronRight, Lightbulb, Search, Users } from "lucide-react";
+import { ChevronDown, ChevronRight, Search, Users } from "lucide-react";
 
 const kindColor: Record<string, string> = {
   module: "bg-syn-blue/15 text-syn-blue",
@@ -16,11 +16,9 @@ interface Props {
   clusters: FunctionalCluster[];
   loading: boolean;
   onEntityClick: (id: string) => void;
-  onHighlightEntities?: (ids: string[], source?: { type: "cluster" | "flow"; id: string }) => void;
-  highlightSource?: { type: "cluster" | "flow"; id: string } | null;
 }
 
-export function ClustersTab({ clusters, loading, onEntityClick, onHighlightEntities, highlightSource }: Props) {
+export function ClustersTab({ clusters, loading, onEntityClick }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -80,43 +78,25 @@ export function ClustersTab({ clusters, loading, onEntityClick, onHighlightEntit
 
       {filtered.map((cluster) => {
         const isExpanded = expanded.has(cluster.id);
-        const isFocused = highlightSource?.type === "cluster" && highlightSource?.id === cluster.id;
         return (
           <div key={cluster.id} className="bg-surface-elevated rounded-lg border border-edge">
-            <div className="flex items-center">
-              <button
-                onClick={() => toggle(cluster.id)}
-                className="flex-1 flex items-center gap-3 p-4 text-left hover:bg-surface-overlay/50 transition-colors"
-              >
-                {isExpanded ? <ChevronDown size={16} className="text-foreground-muted shrink-0" /> : <ChevronRight size={16} className="text-foreground-muted shrink-0" />}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-foreground truncate">{cluster.name}</span>
-                    <span className="text-xs bg-accent/15 text-accent px-1.5 py-0.5 rounded-full shrink-0">
-                      {cluster.members.length} members
-                    </span>
-                  </div>
-                  {cluster.summary && (
-                    <p className="text-sm text-foreground-secondary mt-0.5 truncate">{cluster.summary}</p>
-                  )}
+            <button
+              onClick={() => toggle(cluster.id)}
+              className="w-full flex items-center gap-3 p-4 text-left hover:bg-surface-overlay/50 transition-colors"
+            >
+              {isExpanded ? <ChevronDown size={16} className="text-foreground-muted shrink-0" /> : <ChevronRight size={16} className="text-foreground-muted shrink-0" />}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-foreground truncate">{cluster.name}</span>
+                  <span className="text-xs bg-accent/15 text-accent px-1.5 py-0.5 rounded-full shrink-0">
+                    {cluster.members.length} members
+                  </span>
                 </div>
-              </button>
-              {onHighlightEntities && (
-                <button
-                  onClick={() => {
-                    if (isFocused) {
-                      onHighlightEntities([], undefined);
-                    } else {
-                      onHighlightEntities(cluster.members.map((m) => m.id), { type: "cluster", id: cluster.id });
-                    }
-                  }}
-                  className={`p-2 mr-2 rounded-md transition-colors ${isFocused ? "text-syn-yellow animate-pulse" : "text-foreground-muted hover:text-foreground"}`}
-                  title="Highlight in graph"
-                >
-                  <Lightbulb size={16} />
-                </button>
-              )}
-            </div>
+                {cluster.summary && (
+                  <p className="text-sm text-foreground-secondary mt-0.5 truncate">{cluster.summary}</p>
+                )}
+              </div>
+            </button>
 
             {isExpanded && (
               <div className="border-t border-edge px-4 py-3">

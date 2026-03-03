@@ -146,7 +146,7 @@ export function useChatContext() {
   return ctx;
 }
 
-export function ChatProvider({ children }: { children: ReactNode }) {
+export function ChatProvider({ children, repoId }: { children: ReactNode; repoId?: string }) {
   const [state, dispatch] = useReducer(chatReducer, initialState);
   const abortControllerRef = useRef<AbortController | null>(null);
   const navigate = useNavigate();
@@ -219,7 +219,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       let fullContent = "";
       let evidence: SearchResult[] = [];
 
-      for await (const event of api.chatMessage(sessionId, question, undefined, undefined, controller.signal)) {
+      for await (const event of api.chatMessage(sessionId, question, repoId, undefined, controller.signal)) {
         if (event.event === "facts") {
           try {
             evidence = JSON.parse(event.data);
@@ -267,7 +267,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       dispatch({ type: "STOP_STREAMING" });
       abortControllerRef.current = null;
     }
-  }, [state.activeSession, state.isStreaming, loadSessions]);
+  }, [state.activeSession, state.isStreaming, loadSessions, repoId]);
 
   const abortStream = useCallback(() => {
     abortControllerRef.current?.abort();

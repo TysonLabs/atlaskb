@@ -95,10 +95,12 @@ export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId, focusEnt
 
   useEffect(() => {
     if (!containerRef.current) return;
-    const ro = new ResizeObserver(([entry]) => {
+    const ro = new ResizeObserver(() => {
+      if (!containerRef.current) return;
+      const { clientWidth, clientHeight } = containerRef.current;
       setDimensions({
-        width: entry.contentRect.width,
-        height: Math.max(entry.contentRect.height, 400),
+        width: clientWidth,
+        height: Math.max(clientHeight, 400),
       });
     });
     ro.observe(containerRef.current);
@@ -180,8 +182,8 @@ export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId, focusEnt
   useEffect(() => {
     const rafId = requestAnimationFrame(() => {
       if (!fgRef.current) return;
-      fgRef.current.d3Force("charge")?.strength(-150);
-      fgRef.current.d3Force("link")?.distance(60);
+      fgRef.current.d3Force("charge")?.strength(-300);
+      fgRef.current.d3Force("link")?.distance(100);
     });
     return () => cancelAnimationFrame(rafId);
   }, [rawData]);
@@ -304,6 +306,10 @@ export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId, focusEnt
     fgRef.current?.zoomToFit(300, 40);
   }, [onDeselect]);
 
+  const handleEngineStop = useCallback(() => {
+    fgRef.current?.zoomToFit(400, 60);
+  }, []);
+
   const handleNodeHover = useCallback(
     (node: NodeObject<GNode> | null) => {
       setHoveredNode(node ? { id: node.id, name: node.name, kind: node.kind, val: node.val } : null);
@@ -418,7 +424,7 @@ export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId, focusEnt
       </div>
 
       {/* Graph container */}
-      <div ref={containerRef} className="relative bg-surface rounded-lg border border-edge overflow-hidden" style={{ height: 500 }}>
+      <div ref={containerRef} className="relative bg-surface rounded-lg border border-edge overflow-hidden" style={{ height: 1000 }}>
         {/* Selected node status bar (priority over hover tooltip) */}
         {selectedNode && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 bg-accent/15 border border-accent/30 rounded-xl backdrop-blur-sm z-10 animate-in slide-in-from-top duration-200">
@@ -509,6 +515,7 @@ export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId, focusEnt
           onNodeClick={handleNodeClick}
           onNodeHover={handleNodeHover}
           onBackgroundClick={handleBackgroundClick}
+          onEngineStop={handleEngineStop}
           cooldownTicks={150}
           enableNodeDrag={true}
           d3AlphaDecay={0.02}

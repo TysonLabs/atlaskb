@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
 import type { EntityDetail, Fact, Relationship } from "../../types";
-import { X, Loader2, ChevronRight, ChevronLeft, Target, Code } from "lucide-react";
+import { X, Loader2, ChevronRight, ChevronLeft, Code } from "lucide-react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
@@ -61,10 +61,9 @@ interface Props {
   entityId: string | null;
   onClose: () => void;
   onEntityClick?: (id: string) => void;
-  onFocusInGraph?: (id: string) => void;
 }
 
-export function EntityDrawer({ entityId, onClose, onEntityClick, onFocusInGraph }: Props) {
+export function EntityDrawer({ entityId, onClose, onEntityClick }: Props) {
   const [entity, setEntity] = useState<EntityDetail | null>(null);
   const [facts, setFacts] = useState<Fact[]>([]);
   const [relationships, setRelationships] = useState<Relationship[]>([]);
@@ -216,15 +215,6 @@ export function EntityDrawer({ entityId, onClose, onEntityClick, onFocusInGraph 
           </h3>
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          {onFocusInGraph && entityId && (
-            <button
-              onClick={() => onFocusInGraph(entityId)}
-              className="text-foreground-muted hover:text-foreground"
-              title="Focus in graph"
-            >
-              <Target size={16} />
-            </button>
-          )}
           <button onClick={onClose} className="text-foreground-muted hover:text-foreground">
             <X size={16} />
           </button>

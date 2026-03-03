@@ -8,7 +8,7 @@ import { ArrowLeft, X, AlertTriangle, Trash2, RefreshCw, Loader2 } from "lucide-
 import { EntityDrawer } from "./EntityDrawer";
 import { ClustersTab } from "./ClustersTab";
 import { FlowsTab } from "./FlowsTab";
-import { RepoGraphTab } from "./RepoGraphTab";
+import { RepoChatTab } from "./RepoChatTab";
 
 export function RepoDetail() {
   const { id } = useParams<{ id: string }>();
@@ -16,30 +16,16 @@ export function RepoDetail() {
   const [repo, setRepo] = useState<RepoDetailType | null>(null);
   const [runs, setRuns] = useState<IndexingRun[]>([]);
   const [decisions, setDecisions] = useState<Decision[]>([]);
-  const [tab, setTab] = useState<"overview" | "clusters" | "flows" | "graph" | "quality" | "history" | "decisions" | "settings">("overview");
+  const [tab, setTab] = useState<"overview" | "clusters" | "flows" | "chat" | "quality" | "history" | "decisions" | "settings">("overview");
   const [indexing, setIndexing] = useState<{ status: string; logs: string[] }>({ status: "idle", logs: [] });
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [drawerEntityId, setDrawerEntityId] = useState<string | null>(null);
-  const [focusEntityId, setFocusEntityId] = useState<string | null>(null);
   const [clusters, setClusters] = useState<FunctionalCluster[]>([]);
   const [flows, setFlows] = useState<ExecutionFlow[]>([]);
   const [clustersLoading, setClustersLoading] = useState(false);
   const [flowsLoading, setFlowsLoading] = useState(false);
   const [clustersLoaded, setClustersLoaded] = useState(false);
   const [flowsLoaded, setFlowsLoaded] = useState(false);
-  const [highlightedEntityIds, setHighlightedEntityIds] = useState<Set<string>>(new Set());
-  const [highlightSource, setHighlightSource] = useState<{ type: "cluster" | "flow"; id: string } | null>(null);
-
-  const handleHighlightEntities = useCallback((ids: string[], source?: { type: "cluster" | "flow"; id: string }) => {
-    if (ids.length === 0) {
-      setHighlightedEntityIds(new Set());
-      setHighlightSource(null);
-    } else {
-      setHighlightedEntityIds(new Set(ids));
-      setHighlightSource(source || null);
-      setTab("graph");
-    }
-  }, []);
 
   const refreshData = useCallback(() => {
     if (!id) return;
@@ -73,14 +59,6 @@ export function RepoDetail() {
       .catch(console.error)
       .finally(() => setFlowsLoading(false));
   }, [tab, id, flowsLoaded]);
-
-  // Clear focusEntityId after focus animation completes
-  useEffect(() => {
-    if (focusEntityId) {
-      const t = setTimeout(() => setFocusEntityId(null), 600);
-      return () => clearTimeout(t);
-    }
-  }, [focusEntityId]);
 
   // Check for in-flight indexing on mount
   useEffect(() => {
@@ -156,12 +134,6 @@ export function RepoDetail() {
             {isRunning ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
             {isRunning ? "Indexing..." : "Re-index"}
           </button>
-          <Link
-            to={`/graph?repo=${id}`}
-            className="text-sm px-3 py-1.5 bg-accent text-surface font-medium rounded-md hover:bg-accent-hover transition-colors"
-          >
-            View Graph
-          </Link>
         </div>
       </div>
 
@@ -198,7 +170,7 @@ export function RepoDetail() {
       {/* Tabs */}
       <div className="border-b border-edge mb-4">
         <div className="flex gap-4 overflow-x-auto">
-          {(["overview", "clusters", "flows", "graph", "quality", "history", "decisions", "settings"] as const).map((t) => (
+          {(["overview", "clusters", "flows", "chat", "quality", "history", "decisions", "settings"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -206,7 +178,7 @@ export function RepoDetail() {
                 tab === t ? "border-accent text-accent" : "border-transparent text-foreground-secondary hover:text-foreground"
               }`}
             >
-              {t === "overview" ? "Overview" : t === "clusters" ? "Clusters" : t === "flows" ? "Flows" : t === "graph" ? "Graph" : t === "quality" ? "Quality" : t === "history" ? "History" : t === "decisions" ? `Decisions (${decisions.length})` : "Settings"}
+              {t === "overview" ? "Overview" : t === "clusters" ? "Clusters" : t === "flows" ? "Flows" : t === "chat" ? "Chat" : t === "quality" ? "Quality" : t === "history" ? "History" : t === "decisions" ? `Decisions (${decisions.length})` : "Settings"}
             </button>
           ))}
         </div>
@@ -319,15 +291,15 @@ export function RepoDetail() {
       )}
 
       {tab === "clusters" && (
-        <ClustersTab clusters={clusters} loading={clustersLoading} onEntityClick={setDrawerEntityId} onHighlightEntities={handleHighlightEntities} highlightSource={highlightSource} />
+        <ClustersTab clusters={clusters} loading={clustersLoading} onEntityClick={setDrawerEntityId} />
       )}
 
       {tab === "flows" && (
-        <FlowsTab flows={flows} loading={flowsLoading} onEntityClick={setDrawerEntityId} onHighlightEntities={handleHighlightEntities} highlightSource={highlightSource} />
+        <FlowsTab flows={flows} loading={flowsLoading} onEntityClick={setDrawerEntityId} />
       )}
 
-      {tab === "graph" && (
-        <RepoGraphTab repoId={id!} onEntityClick={setDrawerEntityId} selectedEntityId={drawerEntityId ?? undefined} focusEntityId={focusEntityId ?? undefined} onDeselect={() => setDrawerEntityId(null)} highlightedEntityIds={highlightedEntityIds} />
+      {tab === "chat" && (
+        <RepoChatTab repoId={id!} repoName={repo.name} />
       )}
 
       {tab === "settings" && (
@@ -344,11 +316,6 @@ export function RepoDetail() {
         entityId={drawerEntityId}
         onClose={() => setDrawerEntityId(null)}
         onEntityClick={setDrawerEntityId}
-        onFocusInGraph={(entityId) => {
-          setTab("graph");
-          setDrawerEntityId(entityId);
-          setTimeout(() => setFocusEntityId(entityId), 100);
-        }}
       />
     </div>
   );
