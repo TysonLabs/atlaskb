@@ -87,6 +87,8 @@ func (s *Server) buildRouter() chi.Router {
 		r.Post("/ask", s.handleAsk)
 		r.Get("/search", s.handleSearch)
 
+		r.Get("/file", s.handleReadFile)
+
 		r.Get("/chats", s.handleListChats)
 		r.Post("/chats", s.handleCreateChat)
 		r.Get("/chats/{id}", s.handleGetChat)

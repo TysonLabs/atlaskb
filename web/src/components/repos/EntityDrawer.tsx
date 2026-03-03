@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
 import type { EntityDetail, Fact, Relationship } from "../../types";
-import { X, Loader2, ChevronRight, ChevronLeft, Target } from "lucide-react";
+import { X, Loader2, ChevronRight, ChevronLeft, Target, Code } from "lucide-react";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 const kindColor: Record<string, string> = {
   module: "bg-syn-blue/15 text-syn-blue",
@@ -13,6 +15,47 @@ const kindColor: Record<string, string> = {
   config: "bg-syn-yellow/15 text-syn-yellow",
   cluster: "bg-syn-cyan/15 text-syn-cyan",
 };
+
+const extToLang: Record<string, string> = {
+  go: "go",
+  ts: "typescript",
+  tsx: "typescript",
+  js: "javascript",
+  jsx: "javascript",
+  py: "python",
+  rs: "rust",
+  rb: "ruby",
+  java: "java",
+  kt: "kotlin",
+  swift: "swift",
+  c: "c",
+  cpp: "cpp",
+  h: "c",
+  hpp: "cpp",
+  cs: "csharp",
+  css: "css",
+  scss: "scss",
+  html: "html",
+  json: "json",
+  yaml: "yaml",
+  yml: "yaml",
+  toml: "toml",
+  sql: "sql",
+  sh: "bash",
+  bash: "bash",
+  zsh: "bash",
+  md: "markdown",
+  dockerfile: "docker",
+};
+
+function getLang(path: string): string {
+  const name = path.split("/").pop() || "";
+  if (name.toLowerCase() === "dockerfile") return "docker";
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  return extToLang[ext] || "text";
+}
+
+const STORAGE_KEY = "atlaskb.drawer.width";
 
 interface Props {
   entityId: string | null;
@@ -28,6 +71,57 @@ export function EntityDrawer({ entityId, onClose, onEntityClick, onFocusInGraph 
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState<boolean>(false);
 
+  // Resizable width
+  const [width, setWidth] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    return saved ? parseInt(saved) : 384;
+  });
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e: MouseEvent) => {
+      const newWidth = Math.min(800, Math.max(320, window.innerWidth - e.clientX));
+      setWidth(newWidth);
+    };
+    const onUp = () => {
+      setDragging(false);
+      localStorage.setItem(STORAGE_KEY, String(width));
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [dragging, width]);
+
+  // Source code viewer
+  const [sourceContent, setSourceContent] = useState<string | null>(null);
+  const [sourceLoading, setSourceLoading] = useState(false);
+  const [sourceError, setSourceError] = useState<string | null>(null);
+  const [sourceExpanded, setSourceExpanded] = useState(false);
+
+  useEffect(() => {
+    // Reset source state when entity changes
+    setSourceContent(null);
+    setSourceError(null);
+    setSourceLoading(false);
+    setSourceExpanded(false);
+  }, [entityId]);
+
+  useEffect(() => {
+    if (!sourceExpanded || !entity?.path || !entity?.repo_id) return;
+    if (sourceContent !== null || sourceLoading) return;
+
+    setSourceLoading(true);
+    api
+      .getFileContent(entity.repo_id, entity.path)
+      .then((res) => setSourceContent(res.content))
+      .catch((err) => setSourceError(err.message || "Failed to load file"))
+      .finally(() => setSourceLoading(false));
+  }, [sourceExpanded, entity, sourceContent, sourceLoading]);
+
   useEffect(() => {
     if (!entityId) {
       setEntity(null);
@@ -35,6 +129,9 @@ export function EntityDrawer({ entityId, onClose, onEntityClick, onFocusInGraph 
     }
     let cancelled = false;
     setLoading(true);
+    setEntity(null);
+    setFacts([]);
+    setRelationships([]);
     Promise.all([
       api.getEntity(entityId),
       api.getEntityFacts(entityId),
@@ -91,8 +188,19 @@ export function EntityDrawer({ entityId, onClose, onEntityClick, onFocusInGraph 
     );
   }
 
+  const lang = entity?.path ? getLang(entity.path) : "text";
+
   return (
-    <div className="fixed top-0 right-0 h-full w-96 bg-surface-elevated border-l border-edge shadow-2xl z-50 flex flex-col animate-in slide-in-from-right">
+    <div
+      className="fixed top-0 right-0 h-full bg-surface-elevated border-l border-edge shadow-2xl z-50 flex flex-col animate-in slide-in-from-right"
+      style={{ width }}
+    >
+      {/* Drag handle */}
+      <div
+        onMouseDown={() => setDragging(true)}
+        className="absolute left-0 top-0 h-full w-1 cursor-col-resize hover:bg-accent/30 transition-colors z-10"
+      />
+
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-edge">
         <div className="flex items-center gap-2 min-w-0">
@@ -148,6 +256,35 @@ export function EntityDrawer({ entityId, onClose, onEntityClick, onFocusInGraph 
                 <h4 className="text-xs font-semibold text-foreground-secondary mb-1">Summary</h4>
                 <p className="text-sm text-foreground">{entity.summary}</p>
               </div>
+            )}
+
+            {/* Source Code */}
+            {entity.path && (
+              <details
+                className="group"
+                onToggle={(e) => setSourceExpanded((e.target as HTMLDetailsElement).open)}
+              >
+                <summary className="flex items-center gap-1.5 text-xs font-semibold text-foreground-secondary cursor-pointer">
+                  <Code size={12} /> Source Code
+                  <span className="text-foreground-muted font-normal">{entity.path}</span>
+                </summary>
+                <div className="mt-2 rounded-lg overflow-hidden border border-edge text-xs">
+                  {sourceLoading ? (
+                    <p className="p-2 text-foreground-muted">Loading...</p>
+                  ) : sourceContent ? (
+                    <SyntaxHighlighter
+                      language={lang}
+                      style={oneDark}
+                      showLineNumbers
+                      customStyle={{ margin: 0, fontSize: "11px", maxHeight: "400px" }}
+                    >
+                      {sourceContent}
+                    </SyntaxHighlighter>
+                  ) : sourceError ? (
+                    <p className="text-syn-red p-2">{sourceError}</p>
+                  ) : null}
+                </div>
+              </details>
             )}
 
             {/* Capabilities */}

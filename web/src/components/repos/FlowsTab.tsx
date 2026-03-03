@@ -1,15 +1,19 @@
 import { useState } from "react";
 import type { ExecutionFlow } from "../../types";
-import { GitBranch, Search } from "lucide-react";
+import { Eye, GitBranch, Lightbulb, Search } from "lucide-react";
+import { FlowModal } from "./FlowModal";
 
 interface Props {
   flows: ExecutionFlow[];
   loading: boolean;
   onEntityClick: (id: string) => void;
+  onHighlightEntities?: (ids: string[], source?: { type: string; id: string }) => void;
+  highlightSource?: { type: string; id: string } | null;
 }
 
-export function FlowsTab({ flows, loading, onEntityClick }: Props) {
+export function FlowsTab({ flows, loading, onEntityClick, onHighlightEntities, highlightSource }: Props) {
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedFlow, setSelectedFlow] = useState<ExecutionFlow | null>(null);
 
   if (loading) {
     return <p className="text-sm text-foreground-secondary">Loading flows...</p>;
@@ -55,7 +59,9 @@ export function FlowsTab({ flows, loading, onEntityClick }: Props) {
         </div>
       )}
 
-      {filtered.map((flow) => (
+      {filtered.map((flow) => {
+        const isFocused = highlightSource?.type === "flow" && highlightSource?.id === flow.id;
+        return (
         <div key={flow.id} className="bg-surface-elevated rounded-lg border border-edge p-4">
           <div className="flex items-center gap-2 mb-3">
             <GitBranch size={14} className="text-syn-cyan shrink-0" />
@@ -63,6 +69,29 @@ export function FlowsTab({ flows, loading, onEntityClick }: Props) {
             <span className="text-xs text-foreground-muted ml-auto">
               {flow.step_names.length} steps &middot; depth {flow.depth}
             </span>
+            <button
+              onClick={() => setSelectedFlow(flow)}
+              className="p-1 rounded-md transition-colors text-foreground-muted hover:text-foreground"
+              title="View flow diagram"
+            >
+              <Eye size={16} />
+            </button>
+            {onHighlightEntities && (
+              <button
+                onClick={() => {
+                  if (isFocused) {
+                    onHighlightEntities([], undefined);
+                  } else {
+                    const highlightIds = [flow.entry_entity_id, ...flow.step_entity_ids];
+                    onHighlightEntities(highlightIds, { type: "flow", id: flow.id });
+                  }
+                }}
+                className={`p-1 rounded-md transition-colors ${isFocused ? "text-syn-yellow animate-pulse" : "text-foreground-muted hover:text-foreground"}`}
+                title="Highlight in graph"
+              >
+                <Lightbulb size={16} />
+              </button>
+            )}
           </div>
 
           {/* Entry point */}
@@ -102,7 +131,16 @@ export function FlowsTab({ flows, loading, onEntityClick }: Props) {
             })}
           </div>
         </div>
-      ))}
+        );
+      })}
+
+      {selectedFlow && (
+        <FlowModal
+          flow={selectedFlow}
+          onClose={() => setSelectedFlow(null)}
+          onEntityClick={onEntityClick}
+        />
+      )}
     </div>
   );
 }

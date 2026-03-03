@@ -20,12 +20,26 @@ export function RepoDetail() {
   const [indexing, setIndexing] = useState<{ status: string; logs: string[] }>({ status: "idle", logs: [] });
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [drawerEntityId, setDrawerEntityId] = useState<string | null>(null);
+  const [focusEntityId, setFocusEntityId] = useState<string | null>(null);
   const [clusters, setClusters] = useState<FunctionalCluster[]>([]);
   const [flows, setFlows] = useState<ExecutionFlow[]>([]);
   const [clustersLoading, setClustersLoading] = useState(false);
   const [flowsLoading, setFlowsLoading] = useState(false);
   const [clustersLoaded, setClustersLoaded] = useState(false);
   const [flowsLoaded, setFlowsLoaded] = useState(false);
+  const [highlightedEntityIds, setHighlightedEntityIds] = useState<Set<string>>(new Set());
+  const [highlightSource, setHighlightSource] = useState<{ type: "cluster" | "flow"; id: string } | null>(null);
+
+  const handleHighlightEntities = useCallback((ids: string[], source?: { type: "cluster" | "flow"; id: string }) => {
+    if (ids.length === 0) {
+      setHighlightedEntityIds(new Set());
+      setHighlightSource(null);
+    } else {
+      setHighlightedEntityIds(new Set(ids));
+      setHighlightSource(source || null);
+      setTab("graph");
+    }
+  }, []);
 
   const refreshData = useCallback(() => {
     if (!id) return;
@@ -59,6 +73,14 @@ export function RepoDetail() {
       .catch(console.error)
       .finally(() => setFlowsLoading(false));
   }, [tab, id, flowsLoaded]);
+
+  // Clear focusEntityId after focus animation completes
+  useEffect(() => {
+    if (focusEntityId) {
+      const t = setTimeout(() => setFocusEntityId(null), 600);
+      return () => clearTimeout(t);
+    }
+  }, [focusEntityId]);
 
   // Check for in-flight indexing on mount
   useEffect(() => {
@@ -297,15 +319,15 @@ export function RepoDetail() {
       )}
 
       {tab === "clusters" && (
-        <ClustersTab clusters={clusters} loading={clustersLoading} onEntityClick={setDrawerEntityId} />
+        <ClustersTab clusters={clusters} loading={clustersLoading} onEntityClick={setDrawerEntityId} onHighlightEntities={handleHighlightEntities} highlightSource={highlightSource} />
       )}
 
       {tab === "flows" && (
-        <FlowsTab flows={flows} loading={flowsLoading} onEntityClick={setDrawerEntityId} />
+        <FlowsTab flows={flows} loading={flowsLoading} onEntityClick={setDrawerEntityId} onHighlightEntities={handleHighlightEntities} highlightSource={highlightSource} />
       )}
 
       {tab === "graph" && (
-        <RepoGraphTab repoId={id!} onEntityClick={setDrawerEntityId} selectedEntityId={drawerEntityId ?? undefined} />
+        <RepoGraphTab repoId={id!} onEntityClick={setDrawerEntityId} selectedEntityId={drawerEntityId ?? undefined} focusEntityId={focusEntityId ?? undefined} onDeselect={() => setDrawerEntityId(null)} highlightedEntityIds={highlightedEntityIds} />
       )}
 
       {tab === "settings" && (
@@ -323,8 +345,9 @@ export function RepoDetail() {
         onClose={() => setDrawerEntityId(null)}
         onEntityClick={setDrawerEntityId}
         onFocusInGraph={(entityId) => {
-          setDrawerEntityId(entityId);
           setTab("graph");
+          setDrawerEntityId(entityId);
+          setTimeout(() => setFocusEntityId(entityId), 100);
         }}
       />
     </div>

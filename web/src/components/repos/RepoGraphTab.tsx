@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import ForceGraph2D, { type ForceGraphMethods, type NodeObject, type LinkObject } from "react-force-graph-2d";
 import { api } from "../../api/client";
 import type { GraphData } from "../../types";
-import { Loader2, ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
+import { Loader2, ZoomIn, ZoomOut, Maximize2, Focus, X } from "lucide-react";
 
 const kindColors: Record<string, string> = {
   module: "#61afef",
@@ -59,6 +59,9 @@ interface Props {
   repoId: string;
   onEntityClick: (id: string) => void;
   selectedEntityId?: string;
+  focusEntityId?: string;
+  onDeselect?: () => void;
+  highlightedEntityIds?: Set<string>;
 }
 
 const depthOptions = [
@@ -66,9 +69,10 @@ const depthOptions = [
   { label: "1 hop", value: 1 },
   { label: "2 hops", value: 2 },
   { label: "3 hops", value: 3 },
+  { label: "5 hops", value: 5 },
 ] as const;
 
-export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId }: Props) {
+export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId, focusEntityId, onDeselect, highlightedEntityIds }: Props) {
   const [rawData, setRawData] = useState<GraphData | null>(null);
   const [loading, setLoading] = useState(true);
   const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(new Set());
@@ -170,14 +174,40 @@ export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId }: Props)
     return graphData.nodes.find((n) => n.id === selectedEntityId) || null;
   }, [selectedEntityId, graphData]);
 
-  // Fix 1: D3 force config with requestAnimationFrame, dependent on graphData
+  // D3 force config with requestAnimationFrame, dependent on rawData
   useEffect(() => {
-    requestAnimationFrame(() => {
+    const rafId = requestAnimationFrame(() => {
       if (!fgRef.current) return;
       fgRef.current.d3Force("charge")?.strength(-150);
       fgRef.current.d3Force("link")?.distance(60);
     });
-  }, [graphData]);
+    return () => cancelAnimationFrame(rafId);
+  }, [rawData]);
+
+  // Reset depth filter when selected entity clears
+  useEffect(() => {
+    if (!selectedEntityId) setDepthFilter(null);
+  }, [selectedEntityId]);
+
+  // Focus camera on entity when focusEntityId changes (with retry for unmounted graphs)
+  useEffect(() => {
+    if (!focusEntityId || !fgRef.current) return;
+    let attempts = 0;
+    const tryFocus = () => {
+      if (attempts > 20 || !fgRef.current) return;
+      const node = fgRef.current.graphData().nodes.find((n: any) => n.id === focusEntityId);
+      if (node && node.x != null && node.y != null) {
+        fgRef.current.centerAt(node.x, node.y, 400);
+        fgRef.current.zoom(4, 400);
+      } else {
+        attempts++;
+        requestAnimationFrame(tryFocus);
+      }
+    };
+    // Small initial delay to let ForceGraph mount
+    const id = requestAnimationFrame(tryFocus);
+    return () => cancelAnimationFrame(id);
+  }, [focusEntityId, graphData]);
 
   const toggleKind = (kind: string) => {
     setHiddenKinds((prev) => {
@@ -204,15 +234,34 @@ export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId }: Props)
       const isSelected = selectedEntityId === node.id;
       const r = isSelected ? 7 : 5;
 
+      // Determine if this node should be dimmed due to highlight filtering
+      const hasHighlight = highlightedEntityIds && highlightedEntityIds.size > 0;
+      const isHighlighted = hasHighlight && highlightedEntityIds!.has(node.id);
+      const isDimmed = hasHighlight && !highlightedEntityIds!.has(node.id);
+
+      if (isDimmed) {
+        ctx.globalAlpha = 0.2;
+      }
+
+      // Highlighted node glow
+      if (isHighlighted && !isSelected) {
+        ctx.beginPath();
+        ctx.arc(x, y, r + 4, 0, 2 * Math.PI);
+        ctx.fillStyle = color;
+        ctx.globalAlpha = isDimmed ? 0.05 : 0.15;
+        ctx.fill();
+        ctx.globalAlpha = isDimmed ? 0.2 : 1;
+      }
+
       // Selected node glow ring
       if (isSelected) {
         ctx.beginPath();
         ctx.arc(x, y, r + 3, 0, 2 * Math.PI);
         ctx.strokeStyle = color;
         ctx.lineWidth = 1.5;
-        ctx.globalAlpha = 0.5;
+        ctx.globalAlpha = isDimmed ? 0.1 : 0.5;
         ctx.stroke();
-        ctx.globalAlpha = 1;
+        ctx.globalAlpha = isDimmed ? 0.2 : 1;
       }
 
       ctx.beginPath();
@@ -223,8 +272,11 @@ export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId }: Props)
       ctx.textAlign = "center";
       ctx.fillStyle = "#abb2bf";
       ctx.fillText(node.name, x, y + r + 4);
+
+      // Reset alpha
+      ctx.globalAlpha = 1;
     },
-    [selectedEntityId],
+    [selectedEntityId, highlightedEntityIds],
   );
 
   const paintNodePointerArea = useCallback(
@@ -244,6 +296,11 @@ export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId }: Props)
     },
     [onEntityClick],
   );
+
+  const handleBackgroundClick = useCallback(() => {
+    onDeselect?.();
+    fgRef.current?.zoomToFit(300, 40);
+  }, [onDeselect]);
 
   const handleNodeHover = useCallback(
     (node: NodeObject<GNode> | null) => {
@@ -362,16 +419,19 @@ export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId }: Props)
       <div ref={containerRef} className="relative bg-surface rounded-lg border border-edge overflow-hidden" style={{ height: 500 }}>
         {/* Selected node status bar (priority over hover tooltip) */}
         {selectedNode && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 bg-accent/15 border border-accent/30 rounded-xl backdrop-blur-sm z-10">
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 bg-accent/15 border border-accent/30 rounded-xl backdrop-blur-sm z-10 animate-in slide-in-from-top duration-200">
             <div className="w-2 h-2 bg-accent rounded-full animate-pulse" />
             <span className="font-mono text-sm text-foreground">{selectedNode.name}</span>
             <span className="text-xs text-foreground-muted">({selectedNode.kind})</span>
+            <button onClick={() => onDeselect?.()} className="ml-1 text-foreground-muted hover:text-foreground" title="Clear selection">
+              <X size={14} />
+            </button>
           </div>
         )}
 
         {/* Hover tooltip (only when no selected node bar is showing) */}
         {hoveredNode && !selectedNode && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-surface-elevated/95 border border-edge rounded-lg backdrop-blur-sm z-10 pointer-events-none">
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-surface-elevated/95 border border-edge rounded-lg backdrop-blur-sm z-10 pointer-events-none animate-in fade-in duration-150">
             <span className="font-mono text-sm text-foreground">{hoveredNode.name}</span>
             <span className="text-xs text-foreground-muted ml-2">({hoveredNode.kind})</span>
           </div>
@@ -406,6 +466,26 @@ export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId }: Props)
           >
             <Maximize2 size={16} />
           </button>
+          {selectedEntityId && (
+            <>
+              <div className="h-px bg-edge" />
+              <button
+                onClick={() => {
+                  const fg = fgRef.current;
+                  if (!fg) return;
+                  const node = fg.graphData().nodes.find((n: any) => n.id === selectedEntityId);
+                  if (node && node.x != null && node.y != null) {
+                    fg.centerAt(node.x, node.y, 400);
+                    fg.zoom(4, 400);
+                  }
+                }}
+                className="p-1.5 bg-surface-elevated/90 border border-edge rounded-md hover:bg-surface-overlay text-foreground-secondary hover:text-foreground transition-colors backdrop-blur-sm"
+                title="Focus selected"
+              >
+                <Focus size={16} />
+              </button>
+            </>
+          )}
         </div>
 
         <ForceGraph2D
@@ -426,6 +506,7 @@ export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId }: Props)
           linkLabel={(link: GLink) => `${link.kind} (${link.strength})`}
           onNodeClick={handleNodeClick}
           onNodeHover={handleNodeHover}
+          onBackgroundClick={handleBackgroundClick}
           cooldownTicks={150}
           enableNodeDrag={true}
           d3AlphaDecay={0.02}

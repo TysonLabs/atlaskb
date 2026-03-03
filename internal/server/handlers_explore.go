@@ -110,20 +110,26 @@ func (s *Server) handleRepoFlows(w http.ResponseWriter, r *http.Request) {
 		flows = []models.ExecutionFlow{}
 	}
 
-	// Collect entry entity IDs for batch fetch
+	// Collect entry entity IDs for batch fetch (deduplicated)
 	var entryIDs []uuid.UUID
+	seen := make(map[uuid.UUID]struct{})
 	for _, f := range flows {
-		entryIDs = append(entryIDs, f.EntryEntityID)
+		if _, ok := seen[f.EntryEntityID]; !ok {
+			seen[f.EntryEntityID] = struct{}{}
+			entryIDs = append(entryIDs, f.EntryEntityID)
+		}
 	}
 
 	entityStore := &models.EntityStore{Pool: s.pool}
 	entryMap := make(map[uuid.UUID]*models.Entity)
 	if len(entryIDs) > 0 {
 		entities, err := entityStore.GetByIDs(r.Context(), entryIDs)
-		if err == nil {
-			for i := range entities {
-				entryMap[entities[i].ID] = &entities[i]
-			}
+		if err != nil {
+			writeError(w, NewInternal("fetching entry entities: "+err.Error()))
+			return
+		}
+		for i := range entities {
+			entryMap[entities[i].ID] = &entities[i]
 		}
 	}
 

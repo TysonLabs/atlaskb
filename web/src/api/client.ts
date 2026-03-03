@@ -196,6 +196,9 @@ export const api = {
   }) => post<CrossRepoLink>("/cross-repo/links", data),
   deleteCrossRepoLink: (id: string) => del<{ status: string }>(`/cross-repo/links/${id}`),
 
+  getFileContent: (repoId: string, path: string) =>
+    get<{ path: string; content: string }>(`/file?repo_id=${repoId}&path=${encodeURIComponent(path)}`),
+
   // Multi-repo graph
   getMultiRepoGraph: (repoIds: string[]) =>
     get<GraphData>(`/graph/multi?repo_ids=${repoIds.join(",")}`),
