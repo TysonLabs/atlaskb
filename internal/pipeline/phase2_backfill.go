@@ -150,14 +150,16 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 				entityIDMap[e.QualifiedName] = e.ID
 			}
 
-			// Dynamic max_tokens based on orphan entity count
-			maxTokens := computeMaxTokens(len(names))
-
-			// Truncate content if it would overflow the context window
+			// Resolve context window
 			ctxWin := cfg.ContextWindow
 			if ctxWin <= 0 {
 				ctxWin = 32768
 			}
+
+			// Dynamic max_tokens based on orphan entity count
+			maxTokens := computeMaxTokens(len(names), ctxWin)
+
+			// Truncate content if it would overflow the context window
 			fileContent := string(content)
 			staticPrompt := backfillPrompt(w.path, fi.Language, "", names)
 			maxContentBytes := computeMaxContentBytes(ctxWin, maxTokens, len(systemPromptBackfill)+len(staticPrompt))
@@ -354,14 +356,16 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 					entityIDMap[e.QualifiedName] = e.ID
 				}
 
-				// Dynamic max_tokens based on orphan entity count
-				maxTokens := computeMaxTokens(len(names))
-
-				// Truncate content if it would overflow the context window
+				// Resolve context window
 				ctxWin := cfg.ContextWindow
 				if ctxWin <= 0 {
 					ctxWin = 32768
 				}
+
+				// Dynamic max_tokens based on orphan entity count
+				maxTokens := computeMaxTokens(len(names), ctxWin)
+
+				// Truncate content if it would overflow the context window
 				fileContent := string(content)
 				staticPrompt := backfillPrompt(w.path, fi.Language, "", names)
 				maxContentBytes := computeMaxContentBytes(ctxWin, maxTokens, len(systemPromptBackfill)+len(staticPrompt))

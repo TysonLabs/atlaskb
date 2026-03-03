@@ -46,13 +46,24 @@ func computeMaxContentBytes(contextWindow, maxTokens, staticPromptBytes int) int
 }
 
 // computeMaxTokens calculates dynamic max_tokens for the LLM response based on
-// the number of ctags symbols in the file. More symbols → more entities → more output.
+// the number of ctags symbols in the file and the model's context window.
 // Each symbol can produce an entity (~50 tokens), 4-10 facts (~150 tokens each),
 // and relationships (~50 tokens each), so ~500 tokens per symbol is a reasonable estimate.
-func computeMaxTokens(symbolCount int) int {
+// The cap scales with context window: 16k for 32k models, up to 32k for 128k+ models.
+func computeMaxTokens(symbolCount, contextWindow int) int {
 	tokens := 4096 + symbolCount*512
-	if tokens > 16384 {
-		return 16384
+
+	// Cap at 25% of context window (leaves 75% for input), minimum 16k
+	cap := contextWindow / 4
+	if cap < 16384 {
+		cap = 16384
+	}
+	if cap > 32768 {
+		cap = 32768
+	}
+
+	if tokens > cap {
+		return cap
 	}
 	return tokens
 }
@@ -264,14 +275,16 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 			symbolCount++
 		}
 	}
-	maxTokens := computeMaxTokens(symbolCount)
-
-	// Measure static prompt overhead (prompt with empty content)
-	staticPrompt := Phase2Prompt(job.Target, fi.Language, cfg.RepoName, cfg.Manifest.Stack, "", cfg.Roster)
+	// Resolve context window
 	contextWindow := cfg.ContextWindow
 	if contextWindow <= 0 {
 		contextWindow = 32768
 	}
+
+	maxTokens := computeMaxTokens(symbolCount, contextWindow)
+
+	// Measure static prompt overhead (prompt with empty content)
+	staticPrompt := Phase2Prompt(job.Target, fi.Language, cfg.RepoName, cfg.Manifest.Stack, "", cfg.Roster)
 	maxContentBytes := computeMaxContentBytes(contextWindow, maxTokens, len(systemPromptPhase2)+len(staticPrompt))
 
 	// Truncate file content if it exceeds the budget
@@ -290,7 +303,14 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 	var resp *llm.Response
 	var attempts int
 	currentMaxTokens := maxTokens
-	tokensCap := contextWindow / 4
+	// Retry cap: allow up to 40% of context window on retries (above the initial 25%)
+	tokensCap := contextWindow * 2 / 5
+	if tokensCap < maxTokens*3/2 {
+		tokensCap = maxTokens * 3 / 2 // at minimum allow one bump above starting value
+	}
+	if tokensCap > 32768 {
+		tokensCap = 32768
+	}
 
 	for attempt := 1; attempt <= maxParseAttempts; attempt++ {
 		resp, attempts, err = callLLMWithRetry(ctx, cfg.LLM, cfg.Model, systemPromptPhase2, []llm.Message{
