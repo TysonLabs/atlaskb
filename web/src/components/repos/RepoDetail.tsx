@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { api } from "../../api/client";
 import type { RepoDetail as RepoDetailType, IndexingRun, Decision } from "../../types";
 import { ArrowLeft, X, AlertTriangle, Trash2, RefreshCw, Loader2 } from "lucide-react";
@@ -160,7 +161,7 @@ export function RepoDetail() {
         <div className="bg-surface-elevated rounded-lg border border-edge p-6">
           {repo.overview ? (
             <div className="prose prose-sm max-w-none">
-              <ReactMarkdown>{repo.overview}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{repo.overview}</ReactMarkdown>
             </div>
           ) : (
             <p className="text-sm text-foreground-secondary">No overview yet — run indexing to generate.</p>

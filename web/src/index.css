@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 /* One Dark Pro theme palette */
 @theme {
@@ -97,20 +98,51 @@ body {
   animation: typing-dot 1.4s ease-in-out infinite;
 }
 
-/* Prose overrides for dark theme (Ask page markdown) */
+/* Prose overrides for dark theme */
 .prose {
   --tw-prose-body: #abb2bf;
-  --tw-prose-headings: #abb2bf;
+  --tw-prose-headings: #e5c07b;
   --tw-prose-bold: #abb2bf;
   --tw-prose-links: #61afef;
   --tw-prose-code: #e5c07b;
   --tw-prose-pre-bg: #1e2127;
   --tw-prose-pre-code: #abb2bf;
   --tw-prose-counters: #787d86;
-  --tw-prose-bullets: #545964;
+  --tw-prose-bullets: #61afef;
   --tw-prose-hr: #3e4451;
   --tw-prose-quotes: #787d86;
   --tw-prose-quote-borders: #3e4451;
   --tw-prose-th-borders: #3e4451;
   --tw-prose-td-borders: #3e4451;
+  --tw-prose-captions: #787d86;
+}
+
+/* Hide the repo name h1 — it's already shown above the tabs */
+.prose > h1:first-child {
+  display: none;
+}
+
+/* Table styling for Key Components etc. */
+.prose table {
+  font-size: 0.8125rem;
+}
+
+.prose thead th {
+  color: #787d86;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.6875rem;
+  letter-spacing: 0.05em;
+}
+
+.prose tbody td {
+  color: #abb2bf;
+}
+
+.prose tbody tr {
+  border-bottom-color: #3e4451;
+}
+
+.prose tbody tr:hover {
+  background-color: #2e323b;
 }
