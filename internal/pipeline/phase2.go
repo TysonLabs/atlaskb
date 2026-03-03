@@ -47,17 +47,14 @@ func computeMaxContentBytes(contextWindow, maxTokens, staticPromptBytes int) int
 
 // computeMaxTokens calculates dynamic max_tokens for the LLM response based on
 // the number of ctags symbols in the file and the model's context window.
-// Per-symbol budget: entity (~50 tokens) + 4 facts (~40 tokens each = 160) +
-// 1 relationship (~30 tokens) = ~240 tokens/symbol. We use 300 with headroom.
+// Per-symbol budget: entity (~50 tokens) + 1.5 facts (~60 tokens) +
+// 1 relationship (~30 tokens) = ~140 tokens/symbol. We use 300 with headroom.
 // The cap is 40% of context window — balancing input capacity with output needs.
 func computeMaxTokens(symbolCount, contextWindow int) int {
-	tokens := 2048 + symbolCount*300
+	tokens := 4096 + symbolCount*300
 
 	// Cap at 40% of context window — leaves 60% for input (system + file + roster)
 	cap := contextWindow * 2 / 5
-	if cap > 32768 {
-		cap = 32768
-	}
 
 	if tokens > cap {
 		return cap
@@ -304,9 +301,6 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 	tokensCap := contextWindow * 55 / 100
 	if tokensCap < maxTokens*3/2 {
 		tokensCap = maxTokens * 3 / 2
-	}
-	if tokensCap > 32768 {
-		tokensCap = 32768
 	}
 
 	for attempt := 1; attempt <= maxParseAttempts; attempt++ {
