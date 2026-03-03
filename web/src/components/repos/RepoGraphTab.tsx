@@ -46,6 +46,8 @@ interface GNode {
   name: string;
   kind: string;
   val: number;
+  x?: number;
+  y?: number;
 }
 
 interface GLink {
@@ -195,7 +197,7 @@ export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId, focusEnt
     let attempts = 0;
     const tryFocus = () => {
       if (attempts > 20 || !fgRef.current) return;
-      const node = fgRef.current.graphData().nodes.find((n: any) => n.id === focusEntityId);
+      const node = graphData.nodes.find((n) => n.id === focusEntityId);
       if (node && node.x != null && node.y != null) {
         fgRef.current.centerAt(node.x, node.y, 400);
         fgRef.current.zoom(4, 400);
@@ -473,7 +475,7 @@ export function RepoGraphTab({ repoId, onEntityClick, selectedEntityId, focusEnt
                 onClick={() => {
                   const fg = fgRef.current;
                   if (!fg) return;
-                  const node = fg.graphData().nodes.find((n: any) => n.id === selectedEntityId);
+                  const node = graphData.nodes.find((n) => n.id === selectedEntityId);
                   if (node && node.x != null && node.y != null) {
                     fg.centerAt(node.x, node.y, 400);
                     fg.zoom(4, 400);

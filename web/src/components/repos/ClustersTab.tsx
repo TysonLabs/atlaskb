@@ -16,8 +16,8 @@ interface Props {
   clusters: FunctionalCluster[];
   loading: boolean;
   onEntityClick: (id: string) => void;
-  onHighlightEntities?: (ids: string[], source?: { type: string; id: string }) => void;
-  highlightSource?: { type: string; id: string } | null;
+  onHighlightEntities?: (ids: string[], source?: { type: "cluster" | "flow"; id: string }) => void;
+  highlightSource?: { type: "cluster" | "flow"; id: string } | null;
 }
 
 export function ClustersTab({ clusters, loading, onEntityClick, onHighlightEntities, highlightSource }: Props) {
