@@ -185,6 +185,13 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 			}
 
 			cleaned := CleanJSON(resp.Content)
+			// If truncated, try to repair before parsing
+			if resp.StopReason == "length" {
+				if repaired, ok := RepairTruncatedJSON(cleaned); ok {
+					cleaned = trailingComma.ReplaceAllString(repaired, `$1`)
+					log.Printf("[backfill] %s: repaired truncated JSON", w.path)
+				}
+			}
 			var result BackfillResult
 			if err := parseJSON(cleaned, &result); err != nil {
 				logVerboseF("[backfill] %s: parse error: %v", w.path, err)
@@ -389,6 +396,12 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 				}
 
 				cleaned := CleanJSON(resp.Content)
+				if resp.StopReason == "length" {
+					if repaired, ok := RepairTruncatedJSON(cleaned); ok {
+						cleaned = trailingComma.ReplaceAllString(repaired, `$1`)
+						log.Printf("[backfill-rel] %s: repaired truncated JSON", w.path)
+					}
+				}
 				var result BackfillResult
 				if err := parseJSON(cleaned, &result); err != nil {
 					return nil

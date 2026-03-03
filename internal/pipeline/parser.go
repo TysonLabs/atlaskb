@@ -584,6 +584,77 @@ func normalizeQualifiedNames(result *Phase2Result) {
 	}
 }
 
+// RepairTruncatedJSON attempts to fix JSON that was cut off mid-stream by closing
+// any open strings, arrays, and objects. Returns the repaired string and true if
+// repair was attempted, or the original string and false if it looked complete.
+func RepairTruncatedJSON(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 {
+		return s, false
+	}
+
+	// Check if JSON looks complete (ends with } or ])
+	lastChar := s[len(s)-1]
+	if lastChar == '}' || lastChar == ']' {
+		return s, false
+	}
+
+	// Walk the string to track state
+	inString := false
+	escaped := false
+	var stack []byte // tracks open { and [
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && inString {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		if c == '{' || c == '[' {
+			stack = append(stack, c)
+		} else if c == '}' || c == ']' {
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
+
+	if len(stack) == 0 && !inString {
+		return s, false // looks balanced
+	}
+
+	var repair strings.Builder
+	repair.WriteString(s)
+
+	// Close open string
+	if inString {
+		repair.WriteByte('"')
+	}
+
+	// Close open brackets in reverse order
+	for i := len(stack) - 1; i >= 0; i-- {
+		switch stack[i] {
+		case '{':
+			repair.WriteByte('}')
+		case '[':
+			repair.WriteByte(']')
+		}
+	}
+
+	return repair.String(), true
+}
+
 func ParsePhase2(raw string) (*Phase2Result, error) {
 	cleaned := CleanJSON(raw)
 	var result Phase2Result
@@ -595,6 +666,41 @@ func ParsePhase2(raw string) (*Phase2Result, error) {
 	result.Relationships = sanitizeRelationships(result.Relationships)
 	normalizeQualifiedNames(&result)
 	return &result, nil
+}
+
+// ParsePhase2WithRepair tries normal parsing first; if that fails, attempts to
+// repair truncated JSON before parsing. Returns the result and whether repair was used.
+func ParsePhase2WithRepair(raw string) (*Phase2Result, bool, error) {
+	cleaned := CleanJSON(raw)
+	var result Phase2Result
+	if err := json.Unmarshal([]byte(cleaned), &result); err == nil {
+		result.Entities = sanitizeEntities(result.Entities)
+		result.Facts = sanitizeFacts(result.Facts)
+		result.Relationships = sanitizeRelationships(result.Relationships)
+		normalizeQualifiedNames(&result)
+		return &result, false, nil
+	}
+
+	// Try repair
+	repaired, didRepair := RepairTruncatedJSON(cleaned)
+	if !didRepair {
+		// Couldn't repair — return original error
+		var origResult Phase2Result
+		err := json.Unmarshal([]byte(cleaned), &origResult)
+		return nil, false, err
+	}
+
+	// Strip trailing comma before closing brackets that repair may have created
+	repaired = trailingComma.ReplaceAllString(repaired, `$1`)
+
+	if err := json.Unmarshal([]byte(repaired), &result); err != nil {
+		return nil, true, err
+	}
+	result.Entities = sanitizeEntities(result.Entities)
+	result.Facts = sanitizeFacts(result.Facts)
+	result.Relationships = sanitizeRelationships(result.Relationships)
+	normalizeQualifiedNames(&result)
+	return &result, true, nil
 }
 
 func ParsePhase4(raw string) (*Phase4Result, error) {

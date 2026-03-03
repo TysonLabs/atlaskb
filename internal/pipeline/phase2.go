@@ -320,17 +320,43 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 			return nil, fmt.Errorf("LLM call: %w", err)
 		}
 
-		result, err = ParsePhase2(resp.Content)
-		if err == nil {
-			break // success
+		// If the response was truncated (hit token limit), try to repair the JSON
+		// rather than just retrying with more tokens (which produces more content and truncates again).
+		truncated := resp.StopReason == "length"
+		if truncated {
+			var repaired bool
+			result, repaired, err = ParsePhase2WithRepair(resp.Content)
+			if err == nil {
+				if repaired {
+					log.Printf("[phase2] %s: repaired truncated JSON (stop_reason=length, %d output tokens)",
+						job.Target, resp.OutputTokens)
+				}
+				break
+			}
+		} else {
+			result, err = ParsePhase2(resp.Content)
+			if err == nil {
+				break
+			}
 		}
 
 		if attempt < maxParseAttempts {
-			log.Printf("[phase2] %s: parse attempt %d/%d failed, bumping max_tokens %d → %d",
-				job.Target, attempt, maxParseAttempts, currentMaxTokens, currentMaxTokens*3/2)
-			currentMaxTokens = currentMaxTokens * 3 / 2
-			if currentMaxTokens > tokensCap {
-				currentMaxTokens = tokensCap
+			if truncated {
+				// Truncation: bump tokens more aggressively (2x instead of 1.5x)
+				newTokens := currentMaxTokens * 2
+				if newTokens > tokensCap {
+					newTokens = tokensCap
+				}
+				log.Printf("[phase2] %s: parse attempt %d/%d failed (truncated, repair failed), bumping max_tokens %d → %d",
+					job.Target, attempt, maxParseAttempts, currentMaxTokens, newTokens)
+				currentMaxTokens = newTokens
+			} else {
+				log.Printf("[phase2] %s: parse attempt %d/%d failed, bumping max_tokens %d → %d",
+					job.Target, attempt, maxParseAttempts, currentMaxTokens, currentMaxTokens*3/2)
+				currentMaxTokens = currentMaxTokens * 3 / 2
+				if currentMaxTokens > tokensCap {
+					currentMaxTokens = tokensCap
+				}
 			}
 		}
 	}
