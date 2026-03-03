@@ -186,6 +186,7 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 			Kind:         models.RelProduces,
 			Description:  models.Ptr(fmt.Sprintf("%s (mechanism: %s)", df.Description, df.Mechanism)),
 			Strength:     models.StrengthModerate,
+			Confidence:   RelConfidence(models.ConfRelLLMSynthesis, models.StrengthModerate),
 			Provenance: []models.Provenance{{
 				SourceType: "file",
 				Repo:       cfg.RepoName,
@@ -272,6 +273,7 @@ func RunPhase4(ctx context.Context, cfg Phase4Config) error {
 			Kind:         er.Kind,
 			Description:  models.Ptr(er.Description),
 			Strength:     er.Strength,
+			Confidence:   RelConfidence(models.ConfRelLLMSynthesis, er.Strength),
 			Provenance: []models.Provenance{{
 				SourceType: "file",
 				Repo:       cfg.RepoName,

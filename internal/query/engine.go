@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -33,31 +32,35 @@ type Engine struct {
 	LLM      llm.Client // optional, enables query decomposition
 	Model    string     // LLM model for query decomposition
 	Verbose  bool       // emit per-result score breakdowns via log.Printf
+	RRF      RRFConfig  // Reciprocal Rank Fusion configuration
 }
 
 // scoreTrace tracks how a single result's score was built up.
 type scoreTrace struct {
-	factID      uuid.UUID
-	entityName  string
-	base        float64
-	source      string
-	fusion      float64 // bonus from cross-source agreement (0 if none)
-	fusionFrom  float64 // the other source's score
-	entityBoost float64 // multiplier from entity-name mention (1.0 if none)
-	entitySim   float64 // similarity that drove the boost
-	confidence  float64 // multiplier
-	kindBias    float64 // multiplier
-	category    float64 // multiplier
+	factID       uuid.UUID
+	entityName   string
+	base         float64
+	source       string
+	rrfVectorRank int // 1-based rank in vector list (0 if absent)
+	rrfFTSRank    int // 1-based rank in FTS list (0 if absent)
+	entityBoost  float64 // multiplier from entity-name mention (1.0 if none)
+	entitySim    float64 // similarity that drove the boost
+	confidence   float64 // multiplier
+	kindBias     float64 // multiplier
+	category     float64 // multiplier
 	repoAffinity float64 // multiplier for same-repo boost (1.0 if no repo filter)
-	overlap     float64 // additive bonus
-	final       float64
+	overlap      float64 // additive bonus
+	final        float64
 }
 
 func (t scoreTrace) String() string {
 	s := fmt.Sprintf("  [%s] fact=%s entity=%s\n", t.source, t.factID.String()[:8], t.entityName)
-	s += fmt.Sprintf("    base=%.3f", t.base)
-	if t.fusion > 0 {
-		s += fmt.Sprintf("  fusion=+%.3f (other=%.3f)", t.fusion, t.fusionFrom)
+	s += fmt.Sprintf("    base=%.4f", t.base)
+	if t.rrfVectorRank > 0 {
+		s += fmt.Sprintf("  vecRank=%d", t.rrfVectorRank)
+	}
+	if t.rrfFTSRank > 0 {
+		s += fmt.Sprintf("  ftsRank=%d", t.rrfFTSRank)
 	}
 	if t.entityBoost != 1.0 {
 		s += fmt.Sprintf("  entity_boost=×%.2f (sim=%.2f)", t.entityBoost, t.entitySim)
@@ -77,12 +80,12 @@ func (t scoreTrace) String() string {
 	if t.overlap > 0 {
 		s += fmt.Sprintf("  overlap=+%.2f", t.overlap)
 	}
-	s += fmt.Sprintf("  → final=%.3f", t.final)
+	s += fmt.Sprintf("  → final=%.4f", t.final)
 	return s
 }
 
 func NewEngine(pool *pgxpool.Pool, embedder embeddings.Client) *Engine {
-	return &Engine{Pool: pool, Embedder: embedder}
+	return &Engine{Pool: pool, Embedder: embedder, RRF: DefaultRRFConfig()}
 }
 
 // SetLLM enables query decomposition by providing an LLM client.
@@ -142,6 +145,8 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 		}
 	}
 
+	rrfCfg := e.RRF
+
 	for _, q := range queries {
 		// Step 2a: Vector similarity search
 		vectors, err := e.Embedder.Embed(ctx, []string{q}, embeddings.DefaultModel)
@@ -156,83 +161,67 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 		if firstQueryVec == nil {
 			firstQueryVec = &queryVec
 		}
-		scoredFacts, err := factStore.SearchByVector(ctx, queryVec, repoIDs, perQueryLimit)
+		vectorFacts, err := factStore.SearchByVector(ctx, queryVec, repoIDs, rrfCfg.VectorLimit)
 		if err != nil {
 			return nil, fmt.Errorf("vector search: %w", err)
 		}
 
-		for _, sf := range scoredFacts {
-			if _, ok := seen[sf.ID]; ok {
-				continue
-			}
-			entity, err := entityStore.GetByID(ctx, sf.EntityID)
-			if err != nil || entity == nil {
-				continue
-			}
-			repoName := e.lookupRepoName(ctx, repoStore, repoNameCache, sf.RepoID)
-			seen[sf.ID] = len(allResults)
-			allResults = append(allResults, SearchResult{
-				Fact:     sf.Fact,
-				Entity:   *entity,
-				RepoName: repoName,
-				Score:    sf.Score,
-				Source:   "vector",
-			})
-			if e.Verbose {
-				traces = append(traces, scoreTrace{
-					factID: sf.ID, entityName: entity.Name,
-					base: sf.Score, source: "vector",
-					entityBoost: 1.0, confidence: 1.0, kindBias: 1.0, category: 1.0,
-				})
-			}
-		}
-
-		// Step 2b: Keyword/BM25 search (hybrid)
-		keywordFacts, err := factStore.SearchByKeyword(ctx, q, repoIDs, perQueryLimit/2)
+		// Step 2b: FTS search (non-fatal on error)
+		ftsFacts, err := factStore.SearchByFTSRanked(ctx, q, repoIDs, rrfCfg.FTSLimit)
 		if err != nil {
-			// Keyword search failure is non-fatal (column may not exist yet)
-			keywordFacts = nil
+			// FTS failure is non-fatal — proceed with vector-only results
+			ftsFacts = nil
 		}
 
-		for _, sf := range keywordFacts {
-			// Normalize ts_rank: perfect match (~0.6) → 0.85; mediocre (~0.1) → 0.2
-			normalizedScore := math.Min(sf.Score*1.5, 0.85)
-			if normalizedScore < 0.2 {
-				normalizedScore = 0.2
-			}
-			if idx, ok := seen[sf.ID]; ok {
-				// Cross-source fusion: reward agreement between vector + keyword
-				existing := allResults[idx].Score
-				hi := math.Max(existing, normalizedScore)
-				lo := math.Min(existing, normalizedScore)
-				allResults[idx].Score = hi + 0.1*lo
-				if e.Verbose {
-					traces[idx].fusion = 0.1 * lo
-					traces[idx].fusionFrom = normalizedScore
-				}
+		// Step 2c: Reciprocal Rank Fusion merge
+		merged := mergeRRF(vectorFacts, ftsFacts, rrfCfg)
+
+		for _, mr := range merged {
+			if _, ok := seen[mr.Fact.ID]; ok {
 				continue
 			}
-			entity, err := entityStore.GetByID(ctx, sf.EntityID)
+			entity, err := entityStore.GetByID(ctx, mr.Fact.EntityID)
 			if err != nil || entity == nil {
 				continue
 			}
-			repoName := e.lookupRepoName(ctx, repoStore, repoNameCache, sf.RepoID)
-			seen[sf.ID] = len(allResults)
+			repoName := e.lookupRepoName(ctx, repoStore, repoNameCache, mr.Fact.RepoID)
+
+			// Determine source label
+			source := "vector"
+			if mr.InVector && mr.InFTS {
+				source = "hybrid"
+			} else if mr.InFTS {
+				source = "fts"
+			}
+
+			seen[mr.Fact.ID] = len(allResults)
 			allResults = append(allResults, SearchResult{
-				Fact:     sf.Fact,
+				Fact:     mr.Fact.Fact,
 				Entity:   *entity,
 				RepoName: repoName,
-				Score:    normalizedScore,
-				Source:   "keyword",
+				Score:    mr.RRFScore,
+				Source:   source,
 			})
 			if e.Verbose {
 				traces = append(traces, scoreTrace{
-					factID: sf.ID, entityName: entity.Name,
-					base: normalizedScore, source: "keyword",
+					factID: mr.Fact.ID, entityName: entity.Name,
+					base: mr.RRFScore, source: source,
+					rrfVectorRank: mr.VectorRank, rrfFTSRank: mr.FTSRank,
 					entityBoost: 1.0, confidence: 1.0, kindBias: 1.0, category: 1.0,
 				})
 			}
 		}
+	}
+
+	// Compute top RRF score for scaling expansion and relationship scores
+	topRRFScore := 0.0
+	for _, r := range allResults {
+		if r.Score > topRRFScore {
+			topRRFScore = r.Score
+		}
+	}
+	if topRRFScore == 0 {
+		topRRFScore = 1.0 / float64(rrfCfg.K+1) // fallback: score of rank-1 item
 	}
 
 	// Phase 2: Apply entity-name boost after initial retrieval
@@ -291,7 +280,8 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 					continue
 				}
 				repoName := e.lookupRepoName(ctx, repoStore, repoNameCache, sf.RepoID)
-				score := sf.Score * 0.85 // slight discount vs direct vector hits
+				// Scale expansion score relative to top RRF score (0.85× discount)
+				score := topRRFScore * sf.Score * 0.85
 				seen[sf.ID] = len(allResults)
 				allResults = append(allResults, SearchResult{
 					Fact:     sf.Fact,
@@ -303,7 +293,7 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 				if e.Verbose {
 					traces = append(traces, scoreTrace{
 						factID: sf.ID, entityName: entity.Name,
-						base: score, source: fmt.Sprintf("expansion(vec=%.3f×0.85)", sf.Score),
+						base: score, source: fmt.Sprintf("expansion(vec=%.3f×topRRF×0.85)", sf.Score),
 						entityBoost: 1.0, confidence: 1.0, kindBias: 1.0, category: 1.0,
 					})
 				}
@@ -312,11 +302,11 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 	}
 
 	// Step 4: Relationship graph traversal — follow edges from top entities
-	// Phase 4: Track entity → strength for strength-based scoring
+	// Phase 4: Track entity → strength for strength-based scoring (relative to top RRF score)
 	strengthScore := map[string]float64{
-		models.StrengthStrong:   0.35,
-		models.StrengthModerate: 0.25,
-		models.StrengthWeak:     0.15,
+		models.StrengthStrong:   topRRFScore * 0.35,
+		models.StrengthModerate: topRRFScore * 0.25,
+		models.StrengthWeak:     topRRFScore * 0.15,
 	}
 	relEntityStrength := make(map[uuid.UUID]string) // entityID → best strength
 	for eid := range expandedEntityIDs {
@@ -352,7 +342,7 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 		// Phase 4: Use strength-based score instead of static 0.3
 		score := strengthScore[strength]
 		if score == 0 {
-			score = 0.15 // fallback for unknown strength
+			score = topRRFScore * 0.15 // fallback for unknown strength
 		}
 		count := 0
 		for _, f := range facts {

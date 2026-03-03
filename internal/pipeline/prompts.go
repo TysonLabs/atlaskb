@@ -128,38 +128,29 @@ NEVER include the repo name, file path, or "src" as a prefix.
   defining file, not re-export files.
 
 FACT RULES:
-- Extract 4–10 facts per entity. More complex entities (services, workers, orchestrators,
-  main functions) should have closer to 10. Simple pass-through methods can have 4.
-- REQUIRED dimensions per entity:
-  - "what": at least 1 — what the entity does, its purpose
-  - "how": at least 2 — implementation details, patterns, delegation, algorithms
-  - "why": at least 1 if rationale is apparent from comments, naming, or design choices
-  - "when": extract timing/scheduling facts — polling intervals, timer durations, TTLs,
-    cron schedules, retry delays, timeout values, reconciliation frequencies.
-    Example: "Reconciles company worker configurations every 10 minutes via a ticker loop"
+- The entity "summary" field already captures what the entity does — do NOT repeat it as facts.
+- Only extract facts in these HIGH-VALUE categories:
+  - "constraint": numeric constants, timeouts, buffer sizes, pool sizes, retry counts, limits
+  - "pattern": lifecycle sequences, state machines, concurrency models, delegation patterns
+  - "convention": naming conventions, error handling patterns, coding style choices
+  - "contract": import paths, constructor signatures, error return patterns, config keys
+  - "debt": TODOs, FIXMEs, deprecated patterns, missing tests, hardcoded values
+  - "risk": security issues, scalability concerns, missing validation
+- Only use these dimensions: "how", "why", "when" — do NOT use "what" (covered by summary).
+- Zero facts is acceptable for simple entities with no constraints, patterns, or contracts.
 - OPERATIONAL DETAILS — actively look for and extract:
   - Numeric constants: buffer sizes, pool sizes, concurrency limits, batch sizes, max retries
   - Timeouts and intervals: HTTP timeouts, connection timeouts, polling intervals, backoff durations
   - Thresholds: circuit breaker thresholds, rate limits, queue depth limits, health check intervals
-  - Default configuration values: default ports, default queue names, default prefetch counts
-  Example: "Uses a ProcessPoolExecutor with max_workers=4 for CPU-bound PII detection"
-  Example: "AMQP prefetch_count defaults to 5, matching the concurrency setting"
   Example: "HTTP client timeout is set to 60 seconds with a max of 24 connections"
-- LIFECYCLE PATTERNS — extract startup/shutdown/reconciliation sequences:
+- LIFECYCLE PATTERNS — extract as category "pattern":
   - Init → configure → run → cleanup sequences
   - Worker lifecycle: spawn → poll → process → sleep → repeat
-  - Recovery flows: detect failure → pause → retry → resume
   Example: "Worker Manager lifecycle: load AppConfig → diff company list → spawn new workers → stop removed workers → sleep 10 min → repeat"
-- STATE MACHINES — if an entity transitions through states, document the state transitions
-  as facts. Example: "Job states: pending → processing → completed|failed, with failed jobs
-  retried up to 3 times before moving to dead-letter queue"
-- Flag tech debt (TODOs, FIXMEs, deprecated patterns, missing tests, hardcoded values)
-  as category "debt". Flag risks (security, scalability, missing validation) as "risk".
+- Flag tech debt (TODOs, FIXMEs, deprecated patterns) as category "debt".
+  Flag risks (security, scalability, missing validation) as "risk".
 - Every TODO, FIXME, and NOTE comment MUST become a fact with category "debt" or "risk".
-- COMMENTS ARE GOLD — extract facts from code comments, docstrings, and inline notes.
-  Comments often explain "why" decisions were made and operational constraints.
-- CONFIG FILES — if the file is a config file (YAML, TOML, INI, JSON, .env), extract
-  every meaningful configuration key as a fact with its default value and purpose.
+- Extract facts from code comments — comments often explain "why" and operational constraints.
 
 CONTRACT FACTS (category: "contract") — CRITICAL for code generation:
 - IMPORT PATHS: For each external dependency used in this file, emit a "contract" fact:
@@ -168,8 +159,6 @@ CONTRACT FACTS (category: "contract") — CRITICAL for code generation:
   Example: "Created via NewServer(cfg *Config, pool *pgxpool.Pool) *Server"
 - ERROR RETURN PATTERNS: What errors a function can return:
   Example: "Returns ErrNotFound when entity doesn't exist, wraps DB errors with fmt.Errorf"
-- CONFIG ACCESS: What config keys/env vars this entity reads:
-  Example: "Reads DATABASE_URL from environment, falls back to config.toml [database] section"
 
 - Prefer specific claims with concrete values over vague descriptions.
   BAD:  "Uses a retry mechanism"
@@ -260,23 +249,14 @@ Perfect extraction:
     {"kind": "function", "name": "Run", "qualified_name": "worker::Manager.Run", "summary": "Starts the reconciliation loop until context is cancelled", "capabilities": ["periodic reconciliation", "graceful shutdown on context cancellation"], "assumptions": ["Context cancellation signals shutdown"]}
   ],
   "facts": [
-    {"entity_name": "worker::Manager", "claim": "Manages per-company worker goroutines by polling AppConfig and reconciling the active set", "dimension": "what", "category": "behavior", "confidence": "high"},
-    {"entity_name": "worker::Manager", "claim": "Uses a map[string]*Worker keyed by company ID to track running workers", "dimension": "how", "category": "behavior", "confidence": "high"},
     {"entity_name": "worker::Manager", "claim": "HTTP client has a 30-second timeout (httpTimeout constant)", "dimension": "how", "category": "constraint", "confidence": "high"},
     {"entity_name": "worker::Manager", "claim": "maxRetries constant is set to 3", "dimension": "how", "category": "constraint", "confidence": "high"},
-    {"entity_name": "worker::Manager", "claim": "Designed so each company has exactly one worker goroutine — no fan-out per company", "dimension": "why", "category": "pattern", "confidence": "medium"},
+    {"entity_name": "worker::Manager", "claim": "One worker goroutine per company — no fan-out per company", "dimension": "why", "category": "pattern", "confidence": "medium"},
     {"entity_name": "worker::Manager", "claim": "TODO: add graceful drain before stopping removed workers — currently workers are stopped immediately", "dimension": "how", "category": "debt", "confidence": "high"},
-    {"entity_name": "worker::Manager.Run", "claim": "Runs a reconciliation loop using time.NewTicker with a 10-minute interval (reconcileInterval)", "dimension": "when", "category": "behavior", "confidence": "high"},
+    {"entity_name": "worker::Manager", "claim": "Imports time, net/http, log from standard library", "dimension": "how", "category": "contract", "confidence": "high"},
+    {"entity_name": "worker::Manager.Run", "claim": "10-minute reconciliation interval (reconcileInterval constant)", "dimension": "when", "category": "constraint", "confidence": "high"},
     {"entity_name": "worker::Manager.Run", "claim": "Lifecycle: initial reconcile → ticker loop → reconcile on tick → shutdown on context cancel", "dimension": "how", "category": "pattern", "confidence": "high"},
-    {"entity_name": "worker::Manager.Run", "claim": "Performs an immediate reconciliation on startup before entering the ticker loop", "dimension": "how", "category": "behavior", "confidence": "high"},
-    {"entity_name": "worker::Manager.Run", "claim": "Logs reconciliation errors but does not halt the loop — errors are non-fatal", "dimension": "how", "category": "pattern", "confidence": "high"},
-    {"entity_name": "worker::Manager.Run", "claim": "Calls m.shutdown() on context cancellation to stop all workers", "dimension": "how", "category": "behavior", "confidence": "high"},
-    {"entity_name": "worker::NewManager", "claim": "Initializes an empty worker map and configures the HTTP client with httpTimeout", "dimension": "what", "category": "behavior", "confidence": "high"},
-    {"entity_name": "worker::NewManager", "claim": "Uses dependency injection — accepts *AppConfig and *log.Logger", "dimension": "how", "category": "pattern", "confidence": "high"},
-    {"entity_name": "worker::NewManager", "claim": "Constructor creates the http.Client inline rather than accepting it as a parameter", "dimension": "how", "category": "behavior", "confidence": "high"},
-    {"entity_name": "worker::NewManager", "claim": "Does not perform any validation on the config parameter", "dimension": "how", "category": "risk", "confidence": "medium"},
-    {"entity_name": "worker::NewManager", "claim": "Created via NewManager(cfg *AppConfig, logger *log.Logger) *Manager — constructor accepts config and logger", "dimension": "what", "category": "contract", "confidence": "high"},
-    {"entity_name": "worker::Manager", "claim": "Imports time, net/http, log from standard library", "dimension": "how", "category": "contract", "confidence": "high"}
+    {"entity_name": "worker::NewManager", "claim": "Created via NewManager(cfg *AppConfig, logger *log.Logger) *Manager", "dimension": "how", "category": "contract", "confidence": "high"}
   ],
   "relationships": [
     {"from": "worker::Manager", "to": "worker::Manager.Run", "kind": "owns", "description": "Run is a method on Manager", "strength": "strong"},
@@ -285,14 +265,14 @@ Perfect extraction:
   ]
 }
 
-Note: sanitizeInput-style unexported functions are NOT entities — they're mentioned as facts on their parent. reconcile and shutdown are unexported so they become facts on Manager and Manager.Run, not separate entities. The example shows 4-5 facts per entity including timing ("when"), lifecycle patterns, numeric constants (httpTimeout=30s, reconcileInterval=10min, maxRetries=3), and a TODO as tech debt.
+Note: sanitizeInput-style unexported functions are NOT entities — they're mentioned as facts on their parent. reconcile and shutdown are unexported so they become facts on Manager and Manager.Run, not separate entities. The example shows only high-value facts: constraints (httpTimeout=30s, maxRetries=3), patterns (lifecycle, one-worker-per-company), contracts (constructor signature, imports), and debt (TODO). Generic behavior facts are omitted — the entity summary already covers "what it does".
 
 FACT QUANTITY GUIDANCE:
-- Simple entities (getters, constructors, trait methods): 1-3 facts is fine
-- Standard entities (functions, methods): 3-6 facts
-- Complex entities (services, workers, orchestrators, main functions): 6-10 facts
-- NEVER skip an entity because it has few facts — index it anyway with whatever facts are relevant.
-  Even a single fact ("what it does") is valuable for search and dependency tracking.
+- Simple entities (getters, constructors, trait methods): 0-1 facts — skip if no constraints/patterns apply
+- Standard entities (functions, methods): 1-2 facts
+- Complex entities (services, workers, orchestrators, main functions): 2-5 facts
+- Zero facts is acceptable if the entity has no constraints, patterns, contracts, or debt.
+- NEVER skip an entity because it has few facts — index it anyway for search and dependency tracking.
 
 RELATIONSHIP RULES — EVERY entity MUST have at least 1 relationship:
 - METHODS: Always emit "owns" from the struct type to each method entity. This is the easiest

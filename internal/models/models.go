@@ -19,6 +19,7 @@ const (
 	EntityEndpoint = "endpoint"
 	EntityConcept  = "concept"
 	EntityConfig   = "config"
+	EntityCluster  = "cluster"
 )
 
 // Fact dimensions
@@ -60,6 +61,7 @@ const (
 	RelConfiguredBy = "configured_by"
 	RelOwns         = "owns"
 	RelImports      = "imports"
+	RelMemberOf     = "member_of"
 )
 
 // Relationship strengths
@@ -87,6 +89,7 @@ const (
 	PhasePhase3    = "phase3"
 	PhaseGitLog    = "gitlog"
 	PhaseEmbedding = "embedding"
+	PhasePhase6    = "phase6"
 )
 
 type Repo struct {
@@ -174,6 +177,7 @@ type Relationship struct {
 	Kind         string       `json:"kind"`
 	Description  *string      `json:"description,omitempty"`
 	Strength     string       `json:"strength"`
+	Confidence   float32      `json:"confidence"`
 	Provenance   []Provenance `json:"provenance"`
 	CreatedAt    time.Time    `json:"created_at"`
 }
@@ -213,6 +217,7 @@ type TraversalOptions struct {
 	MaxEntities    int      // safety cap, default 200
 	IncludeFacts   bool     // fetch facts for discovered entities
 	FactsPerEntity int      // max facts per entity, default 10
+	MinConfidence  float32  // filter out relationships below this confidence (0 = no filter)
 }
 
 // DefaultTraversalOptions returns sensible defaults for graph traversal.
@@ -223,6 +228,42 @@ func DefaultTraversalOptions() TraversalOptions {
 		IncludeFacts:   false,
 		FactsPerEntity: 10,
 	}
+}
+
+// Relationship confidence tiers — deterministic sources score higher than LLM-inferred ones.
+const (
+	ConfRelDeterministicAST   float32 = 0.95
+	ConfRelDeterministicOwns  float32 = 0.90
+	ConfRelCrossRepoHeuristic float32 = 0.75
+	ConfRelLLMSameFile        float32 = 0.85
+	ConfRelLLMCrossFile       float32 = 0.70
+	ConfRelLLMDeferred        float32 = 0.65
+	ConfRelLLMSynthesis       float32 = 0.65
+	ConfRelLLMBackfill        float32 = 0.60
+	ConfRelLLMPRMining        float32 = 0.55
+)
+
+// StrengthToConfidenceDelta maps a relationship strength enum to a small confidence adjustment.
+func StrengthToConfidenceDelta(strength string) float32 {
+	switch strength {
+	case StrengthStrong:
+		return 0.05
+	case StrengthWeak:
+		return -0.05
+	default:
+		return 0.0
+	}
+}
+
+// ClampConfidence clamps a confidence value to [0.0, 1.0].
+func ClampConfidence(c float32) float32 {
+	if c < 0.0 {
+		return 0.0
+	}
+	if c > 1.0 {
+		return 1.0
+	}
+	return c
 }
 
 type IndexingRun struct {

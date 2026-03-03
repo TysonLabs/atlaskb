@@ -70,6 +70,16 @@ func RegisterTools(srv *gomcp.Server, pool *pgxpool.Pool, embedder embeddings.Cl
 		Name:        "get_task_context",
 		Description: "Get a bundled context package for a coding task. Combines conventions, module context, service contracts, and decisions for a set of files in one call.",
 	}, s.handleGetTaskContext)
+
+	gomcp.AddTool(srv, &gomcp.Tool{
+		Name:        "get_execution_flows",
+		Description: "Get detected execution flows (call chains) through the codebase. Shows entry points and the functions they call in sequence. Use 'through' to filter flows passing through a specific function.",
+	}, s.handleGetExecutionFlows)
+
+	gomcp.AddTool(srv, &gomcp.Tool{
+		Name:        "get_functional_clusters",
+		Description: "Get functional clusters (community detection) for a repository. Returns groups of code entities that form cohesive functional areas based on their call/dependency relationships.",
+	}, s.handleGetFunctionalClusters)
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -208,6 +218,7 @@ type getImpactAnalysisInput struct {
 	MaxHops    int      `json:"max_hops,omitempty" jsonschema:"Max traversal depth (default 2, max 5)"`
 	RelKinds   []string `json:"rel_kinds,omitempty" jsonschema:"Filter by relationship kinds (e.g. depends_on, calls)"`
 	MaxResults int      `json:"max_results,omitempty" jsonschema:"Max results to return (default 50, max 200)"`
+	MinConfidence float32  `json:"min_confidence,omitempty" jsonschema:"Minimum confidence threshold (0.0-1.0) to filter relationships"`
 }
 
 type getDecisionContextInput struct {
@@ -221,6 +232,17 @@ type getTaskContextInput struct {
 	Files      []string `json:"files" jsonschema:"List of file paths or qualified names (required)"`
 	Depth      string   `json:"depth,omitempty" jsonschema:"shallow (default) or deep"`
 	MaxResults int      `json:"max_results,omitempty" jsonschema:"Max results per sub-query (default 50, max 200)"`
+}
+
+type getExecutionFlowsInput struct {
+	Repo       string `json:"repo" jsonschema:"Repository name (required)"`
+	Through    string `json:"through,omitempty" jsonschema:"Filter to flows containing this function name"`
+	MaxResults int    `json:"max_results,omitempty" jsonschema:"Max flows to return (default 20, max 50)"`
+}
+
+type getFunctionalClustersInput struct {
+	Repo       string `json:"repo" jsonschema:"Repository name (required)"`
+	MaxResults int    `json:"max_results,omitempty" jsonschema:"Max results to return (default 50, max 200)"`
 }
 
 // ── Response types ───────────────────────────────────────────────────────────
@@ -298,6 +320,7 @@ type relationshipItem struct {
 	Repo             string `json:"repo,omitempty"`
 	RelationshipKind string `json:"relationship_kind"`
 	Direction        string `json:"direction,omitempty"`
+	Confidence       float32 `json:"confidence,omitempty"`
 }
 
 type moduleContextResponse struct {
@@ -312,6 +335,7 @@ type dependentItem struct {
 	Path             string `json:"path,omitempty"`
 	Repo             string `json:"repo,omitempty"`
 	RelationshipKind string `json:"relationship_kind"`
+	Confidence       float32 `json:"confidence,omitempty"`
 }
 
 type serviceContractResponse struct {
@@ -327,6 +351,7 @@ type impactItem struct {
 	Repo             string `json:"repo,omitempty"`
 	Direction        string `json:"direction"`
 	RelationshipKind string `json:"relationship_kind"`
+	Confidence       float32 `json:"confidence"`
 }
 
 type transitivePathItem struct {
@@ -656,7 +681,7 @@ func (s *Server) handleGetModuleContext(ctx context.Context, req *gomcp.CallTool
 		repoNameCache := make(map[uuid.UUID]string)
 		relItems := make([]relationshipItem, 0, len(rels))
 		for _, r := range rels {
-			ri := relationshipItem{RelationshipKind: r.Kind}
+			ri := relationshipItem{RelationshipKind: r.Kind, Confidence: r.Confidence}
 			if r.FromEntityID == entity.ID {
 				ri.Direction = "outgoing"
 				if other, ok := otherMap[r.ToEntityID]; ok && other != nil {
@@ -722,7 +747,7 @@ func (s *Server) handleGetServiceContract(ctx context.Context, req *gomcp.CallTo
 	repoNameCache := make(map[uuid.UUID]string)
 	dependents := make([]dependentItem, 0, len(rels))
 	for _, r := range rels {
-		di := dependentItem{RelationshipKind: r.Kind}
+		di := dependentItem{RelationshipKind: r.Kind, Confidence: r.Confidence}
 		if other, ok := depMap[r.FromEntityID]; ok && other != nil {
 			di.Name = other.Name
 			di.Kind = other.Kind
@@ -798,6 +823,7 @@ func (s *Server) handleGetImpactAnalysis(ctx context.Context, req *gomcp.CallToo
 		RelKinds:    args.RelKinds,
 		MaxEntities: limit,
 		CrossRepo:   true,
+		MinConfidence: args.MinConfidence,
 	}
 	subgraph, err := relStore.TraverseFromEntity(ctx, entity.ID, opts)
 	if err != nil {
@@ -814,7 +840,7 @@ func (s *Server) handleGetImpactAnalysis(ctx context.Context, req *gomcp.CallToo
 		if r.FromEntityID != entity.ID && r.ToEntityID != entity.ID {
 			continue // not a direct relationship
 		}
-		ii := impactItem{RelationshipKind: r.Kind}
+		ii := impactItem{RelationshipKind: r.Kind, Confidence: r.Confidence}
 		if r.FromEntityID == entity.ID {
 			ii.Direction = "depends_on"
 			if r.Kind == models.RelTestedBy {
@@ -1207,7 +1233,7 @@ func (s *Server) handleGetTaskContext(ctx context.Context, req *gomcp.CallToolRe
 				} else {
 					relItems := make([]relationshipItem, 0, len(rels))
 					for _, r := range rels {
-						ri := relationshipItem{RelationshipKind: r.Kind}
+						ri := relationshipItem{RelationshipKind: r.Kind, Confidence: r.Confidence}
 						if r.FromEntityID == entity.ID {
 							ri.Direction = "outgoing"
 							if other, ok := otherMap[r.ToEntityID]; ok && other != nil {
@@ -1250,7 +1276,7 @@ func (s *Server) handleGetTaskContext(ctx context.Context, req *gomcp.CallToolRe
 			} else {
 				dependents := make([]dependentItem, 0, len(depRels))
 				for _, r := range depRels {
-					di := dependentItem{RelationshipKind: r.Kind}
+					di := dependentItem{RelationshipKind: r.Kind, Confidence: r.Confidence}
 					if other, ok := depMap[r.FromEntityID]; ok && other != nil {
 						di.Name = other.Name
 						di.Kind = other.Kind
@@ -1363,6 +1389,187 @@ func toEntitySummary(e *models.Entity) entitySummary {
 		Capabilities:  e.Capabilities,
 		Assumptions:   e.Assumptions,
 	}
+}
+
+// ── Execution flows handler ──────────────────────────────────────────────────
+
+type flowResultItem struct {
+	EntryPoint string   `json:"entry_point"`
+	Label      string   `json:"label"`
+	Steps      []string `json:"steps"`
+	Depth      int      `json:"depth"`
+}
+
+func (s *Server) handleGetExecutionFlows(ctx context.Context, req *gomcp.CallToolRequest, args getExecutionFlowsInput) (*gomcp.CallToolResult, any, error) {
+	if args.Repo == "" {
+		return errorResult("repo is required"), nil, nil
+	}
+	repo, err := s.resolveRepo(ctx, args.Repo)
+	if err != nil {
+		return errorResult(err.Error()), nil, nil
+	}
+
+	limit := clampMaxResults(args.MaxResults, 20, 50)
+	flowStore := &models.FlowStore{Pool: s.pool}
+
+	var flows []models.ExecutionFlow
+
+	if args.Through != "" {
+		// Find entities matching the "through" name, then find flows containing them
+		entityStore := &models.EntityStore{Pool: s.pool}
+		entities, err := entityStore.FindByName(ctx, repo.ID, args.Through)
+		if err != nil {
+			return errorResult(fmt.Sprintf("finding entity: %v", err)), nil, nil
+		}
+		if len(entities) == 0 {
+			return jsonResult([]flowResultItem{}), nil, nil
+		}
+
+		// Collect flows from all matching entities, dedup by flow ID
+		seen := make(map[uuid.UUID]bool)
+		for _, e := range entities {
+			eFlows, err := flowStore.FindByEntity(ctx, e.ID, limit)
+			if err != nil {
+				continue
+			}
+			for _, f := range eFlows {
+				if !seen[f.ID] {
+					seen[f.ID] = true
+					flows = append(flows, f)
+				}
+			}
+		}
+		// Cap at limit
+		if len(flows) > limit {
+			flows = flows[:limit]
+		}
+	} else {
+		flows, err = flowStore.ListByRepo(ctx, repo.ID, limit)
+		if err != nil {
+			return errorResult(fmt.Sprintf("listing flows: %v", err)), nil, nil
+		}
+	}
+
+	// Batch-fetch entry point entities for display names
+	entryIDs := make([]uuid.UUID, 0, len(flows))
+	for _, f := range flows {
+		entryIDs = append(entryIDs, f.EntryEntityID)
+	}
+	entryMap, _ := s.batchGetEntities(ctx, entryIDs)
+
+	items := make([]flowResultItem, 0, len(flows))
+	for _, f := range flows {
+		entryName := ""
+		if e, ok := entryMap[f.EntryEntityID]; ok {
+			entryName = e.QualifiedName
+		}
+		items = append(items, flowResultItem{
+			EntryPoint: entryName,
+			Label:      f.Label,
+			Steps:      f.StepNames,
+			Depth:      f.Depth,
+		})
+	}
+
+	return jsonResult(items), nil, nil
+}
+
+// ── Functional Clusters ─────────────────────────────────────────────────────
+
+type clusterMemberItem struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	Path string `json:"path,omitempty"`
+}
+
+type clusterItem struct {
+	Label       string              `json:"label"`
+	Description string              `json:"description"`
+	MemberCount int                 `json:"member_count"`
+	Members     []clusterMemberItem `json:"members"`
+}
+
+type functionalClustersResponse struct {
+	Clusters []clusterItem `json:"clusters"`
+}
+
+func (s *Server) handleGetFunctionalClusters(ctx context.Context, req *gomcp.CallToolRequest, args getFunctionalClustersInput) (*gomcp.CallToolResult, any, error) {
+	if args.Repo == "" {
+		return errorResult("repo parameter is required"), nil, nil
+	}
+
+	repo, err := s.resolveRepo(ctx, args.Repo)
+	if err != nil {
+		return errorResult(err.Error()), nil, nil
+	}
+
+	limit := clampMaxResults(args.MaxResults, 50, 200)
+
+	entityStore := &models.EntityStore{Pool: s.pool}
+	relStore := &models.RelationshipStore{Pool: s.pool}
+
+	// Find all cluster entities for this repo
+	clusters, err := entityStore.ListByRepoAndKind(ctx, repo.ID, models.EntityCluster)
+	if err != nil {
+		return errorResult(fmt.Sprintf("listing clusters: %v", err)), nil, nil
+	}
+
+	if len(clusters) == 0 {
+		return jsonResult(functionalClustersResponse{Clusters: []clusterItem{}}), nil, nil
+	}
+
+	var items []clusterItem
+	for _, cluster := range clusters {
+		if len(items) >= limit {
+			break
+		}
+
+		// Find member_of relationships pointing TO this cluster
+		rels, err := relStore.ListDependentsOf(ctx, cluster.ID, 200)
+		if err != nil {
+			continue
+		}
+
+		// Filter to only member_of relationships
+		var memberIDs []uuid.UUID
+		for _, r := range rels {
+			if r.Kind == models.RelMemberOf {
+				memberIDs = append(memberIDs, r.FromEntityID)
+			}
+		}
+
+		// Batch fetch member entities
+		memberEntities, err := entityStore.GetByIDs(ctx, memberIDs)
+		if err != nil {
+			continue
+		}
+
+		members := make([]clusterMemberItem, 0, len(memberEntities))
+		for _, m := range memberEntities {
+			item := clusterMemberItem{
+				Name: m.QualifiedName,
+				Kind: m.Kind,
+			}
+			if m.Path != nil {
+				item.Path = *m.Path
+			}
+			members = append(members, item)
+		}
+
+		description := ""
+		if cluster.Summary != nil {
+			description = *cluster.Summary
+		}
+
+		items = append(items, clusterItem{
+			Label:       cluster.Name,
+			Description: description,
+			MemberCount: len(members),
+			Members:     members,
+		})
+	}
+
+	return jsonResult(functionalClustersResponse{Clusters: items}), nil, nil
 }
 
 func jsonResult(v any) *gomcp.CallToolResult {

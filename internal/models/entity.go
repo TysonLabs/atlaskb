@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pgvector/pgvector-go"
 )
 
 type EntityStore struct {
@@ -554,6 +555,111 @@ func (s *EntityStore) Delete(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("deleting entity %s: %w", id, err)
 	}
 	return nil
+}
+
+// ScoredEntity wraps an Entity with its cosine similarity score from vector search.
+type ScoredEntity struct {
+	Entity
+	Score float64
+}
+
+// UpdateSummaryEmbedding sets the summary_embedding vector for an entity.
+func (s *EntityStore) UpdateSummaryEmbedding(ctx context.Context, id uuid.UUID, embedding pgvector.Vector) error {
+	_, err := s.Pool.Exec(ctx,
+		`UPDATE entities SET summary_embedding = $2 WHERE id = $1`,
+		id, embedding,
+	)
+	if err != nil {
+		return fmt.Errorf("updating summary embedding: %w", err)
+	}
+	return nil
+}
+
+// ListByRepoWithoutSummaryEmbedding returns entities that have a summary but no summary embedding.
+func (s *EntityStore) ListByRepoWithoutSummaryEmbedding(ctx context.Context, repoID uuid.UUID) ([]Entity, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, signature, typeref, start_line, end_line, created_at, updated_at
+		 FROM entities WHERE repo_id = $1 AND summary IS NOT NULL AND summary_embedding IS NULL`, repoID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing entities without summary embedding: %w", err)
+	}
+	defer rows.Close()
+
+	var entities []Entity
+	for rows.Next() {
+		var e Entity
+		if err := rows.Scan(&e.ID, &e.RepoID, &e.Kind, &e.Name, &e.QualifiedName, &e.Path, &e.Summary, &e.Capabilities, &e.Assumptions, &e.Signature, &e.TypeRef, &e.StartLine, &e.EndLine, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning entity: %w", err)
+		}
+		entities = append(entities, e)
+	}
+	return entities, nil
+}
+
+// SearchBySummaryVector performs vector similarity search on entity summaries.
+// Returns entities whose summary embedding has cosine similarity >= 0.4 with the query vector.
+func (s *EntityStore) SearchBySummaryVector(ctx context.Context, embedding pgvector.Vector, repoIDs []uuid.UUID, limit int) ([]ScoredEntity, error) {
+	query := `SELECT id, repo_id, kind, name, qualified_name, path, summary, capabilities, assumptions, signature, typeref, start_line, end_line, created_at, updated_at,
+		 1 - (summary_embedding <=> $1) AS score
+		 FROM entities WHERE summary_embedding IS NOT NULL AND 1 - (summary_embedding <=> $1) >= 0.4`
+	args := []any{embedding}
+	argIdx := 2
+
+	if len(repoIDs) > 0 {
+		query += fmt.Sprintf(" AND repo_id = ANY($%d)", argIdx)
+		args = append(args, repoIDs)
+		argIdx++
+	}
+
+	query += fmt.Sprintf(" ORDER BY summary_embedding <=> $1 LIMIT $%d", argIdx)
+	args = append(args, limit)
+
+	rows, err := s.Pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("summary vector search: %w", err)
+	}
+	defer rows.Close()
+
+	var results []ScoredEntity
+	for rows.Next() {
+		var se ScoredEntity
+		if err := rows.Scan(&se.ID, &se.RepoID, &se.Kind, &se.Name, &se.QualifiedName, &se.Path, &se.Summary, &se.Capabilities, &se.Assumptions, &se.Signature, &se.TypeRef, &se.StartLine, &se.EndLine, &se.CreatedAt, &se.UpdatedAt, &se.Score); err != nil {
+			return nil, fmt.Errorf("scanning scored entity: %w", err)
+		}
+		results = append(results, se)
+	}
+	return results, nil
+}
+
+// MaxSummarySimilarity returns the maximum cosine similarity between the query vector
+// and summary embeddings for each entity ID. Used as a fallback in triplet scoring
+// when entities have no matching facts.
+func (s *EntityStore) MaxSummarySimilarity(ctx context.Context, queryVec pgvector.Vector, entityIDs []uuid.UUID) (map[uuid.UUID]float64, error) {
+	if len(entityIDs) == 0 {
+		return make(map[uuid.UUID]float64), nil
+	}
+	rows, err := s.Pool.Query(ctx,
+		`SELECT id, 1 - (summary_embedding <=> $1) AS score
+		 FROM entities
+		 WHERE id = ANY($2) AND summary_embedding IS NOT NULL`,
+		queryVec, entityIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("computing max summary similarity: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[uuid.UUID]float64, len(entityIDs))
+	for rows.Next() {
+		var eid uuid.UUID
+		var score float64
+		if err := rows.Scan(&eid, &score); err != nil {
+			return nil, fmt.Errorf("scanning summary similarity: %w", err)
+		}
+		result[eid] = score
+	}
+	return result, nil
 }
 
 // DeleteByPath deletes all entities (and cascading facts/relationships) for a given path in a repo.

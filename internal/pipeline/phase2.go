@@ -225,6 +225,7 @@ func RunPhase2(ctx context.Context, cfg Phase2Config) (*Phase2Stats, error) {
 				Kind:         d.Kind,
 				Description:  models.Ptr(d.Description),
 				Strength:     d.Strength,
+				Confidence:   RelConfidence(models.ConfRelLLMDeferred, d.Strength),
 				Provenance: []models.Provenance{{
 					SourceType: "file",
 					Repo:       d.RepoName,
@@ -671,6 +672,7 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 			Kind:         ext.Kind,
 			Description:  models.Ptr(ext.Description),
 			Strength:     ext.Strength,
+			Confidence:   RelConfidence(models.ConfRelLLMCrossFile, ext.Strength),
 			Provenance: []models.Provenance{{
 				SourceType: "file",
 				Repo:       cfg.RepoName,

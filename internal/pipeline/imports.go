@@ -126,6 +126,7 @@ func StoreImportRelationships(ctx context.Context, pool *pgxpool.Pool, repoID uu
 			ToEntityID:   targetEntity.ID,
 			Kind:         models.RelImports,
 			Strength:     models.StrengthStrong,
+			Confidence:   models.ConfRelDeterministicAST,
 			Provenance: []models.Provenance{{
 				SourceType: "file",
 				Repo:       repoName,

@@ -82,6 +82,7 @@ func DiscoverCrossRepoLinks(ctx context.Context, pool *pgxpool.Pool, repoID uuid
 			ToRepoID:     match.repo.ID,
 			Kind:         models.RelDependsOn,
 			Strength:     models.StrengthStrong,
+			Confidence:   models.ConfRelCrossRepoHeuristic,
 			Provenance: []models.Provenance{{
 				SourceType: "auto-discovery",
 				Repo:       repoName,

@@ -24,9 +24,9 @@ func (s *RelationshipStore) Create(ctx context.Context, r *Relationship) error {
 	}
 
 	_, err = s.Pool.Exec(ctx,
-		`INSERT INTO relationships (id, repo_id, from_entity_id, to_entity_id, kind, description, strength, provenance, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		r.ID, r.RepoID, r.FromEntityID, r.ToEntityID, r.Kind, r.Description, r.Strength, provJSON, r.CreatedAt,
+		`INSERT INTO relationships (id, repo_id, from_entity_id, to_entity_id, kind, description, strength, confidence, provenance, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		r.ID, r.RepoID, r.FromEntityID, r.ToEntityID, r.Kind, r.Description, r.Strength, r.Confidence, provJSON, r.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting relationship: %w", err)
@@ -43,14 +43,15 @@ func (s *RelationshipStore) Upsert(ctx context.Context, r *Relationship) error {
 	}
 
 	err = s.Pool.QueryRow(ctx,
-		`INSERT INTO relationships (id, repo_id, from_entity_id, to_entity_id, kind, description, strength, provenance, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`INSERT INTO relationships (id, repo_id, from_entity_id, to_entity_id, kind, description, strength, confidence, provenance, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 ON CONFLICT (repo_id, from_entity_id, to_entity_id, kind) DO UPDATE SET
 		   description = COALESCE(EXCLUDED.description, relationships.description),
 		   strength = EXCLUDED.strength,
+		   confidence = GREATEST(EXCLUDED.confidence, relationships.confidence),
 		   provenance = EXCLUDED.provenance
 		 RETURNING id`,
-		uuid.New(), r.RepoID, r.FromEntityID, r.ToEntityID, r.Kind, r.Description, r.Strength, provJSON, r.CreatedAt,
+		uuid.New(), r.RepoID, r.FromEntityID, r.ToEntityID, r.Kind, r.Description, r.Strength, r.Confidence, provJSON, r.CreatedAt,
 	).Scan(&r.ID)
 	if err != nil {
 		return fmt.Errorf("upserting relationship: %w", err)
@@ -60,7 +61,7 @@ func (s *RelationshipStore) Upsert(ctx context.Context, r *Relationship) error {
 
 func (s *RelationshipStore) ListByEntity(ctx context.Context, entityID uuid.UUID) ([]Relationship, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, repo_id, from_entity_id, to_entity_id, kind, description, strength, provenance, created_at
+		`SELECT id, repo_id, from_entity_id, to_entity_id, kind, description, strength, confidence, provenance, created_at
 		 FROM relationships WHERE from_entity_id = $1 OR to_entity_id = $1 ORDER BY kind`, entityID,
 	)
 	if err != nil {
@@ -72,7 +73,7 @@ func (s *RelationshipStore) ListByEntity(ctx context.Context, entityID uuid.UUID
 	for rows.Next() {
 		var r Relationship
 		var provJSON []byte
-		if err := rows.Scan(&r.ID, &r.RepoID, &r.FromEntityID, &r.ToEntityID, &r.Kind, &r.Description, &r.Strength, &provJSON, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.RepoID, &r.FromEntityID, &r.ToEntityID, &r.Kind, &r.Description, &r.Strength, &r.Confidence, &provJSON, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scanning relationship: %w", err)
 		}
 		if err := json.Unmarshal(provJSON, &r.Provenance); err != nil {
@@ -80,12 +81,15 @@ func (s *RelationshipStore) ListByEntity(ctx context.Context, entityID uuid.UUID
 		}
 		rels = append(rels, r)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating relationships: %w", err)
+	}
 	return rels, nil
 }
 
 func (s *RelationshipStore) ListByEntityLimited(ctx context.Context, entityID uuid.UUID, limit int) ([]Relationship, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, repo_id, from_entity_id, to_entity_id, kind, description, strength, provenance, created_at
+		`SELECT id, repo_id, from_entity_id, to_entity_id, kind, description, strength, confidence, provenance, created_at
 		 FROM relationships WHERE from_entity_id = $1 OR to_entity_id = $1 ORDER BY kind LIMIT $2`, entityID, limit,
 	)
 	if err != nil {
@@ -97,7 +101,7 @@ func (s *RelationshipStore) ListByEntityLimited(ctx context.Context, entityID uu
 	for rows.Next() {
 		var r Relationship
 		var provJSON []byte
-		if err := rows.Scan(&r.ID, &r.RepoID, &r.FromEntityID, &r.ToEntityID, &r.Kind, &r.Description, &r.Strength, &provJSON, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.RepoID, &r.FromEntityID, &r.ToEntityID, &r.Kind, &r.Description, &r.Strength, &r.Confidence, &provJSON, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scanning relationship: %w", err)
 		}
 		if err := json.Unmarshal(provJSON, &r.Provenance); err != nil {
@@ -105,12 +109,15 @@ func (s *RelationshipStore) ListByEntityLimited(ctx context.Context, entityID uu
 		}
 		rels = append(rels, r)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating relationships: %w", err)
+	}
 	return rels, nil
 }
 
 func (s *RelationshipStore) ListByRepo(ctx context.Context, repoID uuid.UUID) ([]Relationship, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, repo_id, from_entity_id, to_entity_id, kind, description, strength, provenance, created_at
+		`SELECT id, repo_id, from_entity_id, to_entity_id, kind, description, strength, confidence, provenance, created_at
 		 FROM relationships WHERE repo_id = $1 ORDER BY kind`, repoID,
 	)
 	if err != nil {
@@ -122,7 +129,7 @@ func (s *RelationshipStore) ListByRepo(ctx context.Context, repoID uuid.UUID) ([
 	for rows.Next() {
 		var r Relationship
 		var provJSON []byte
-		if err := rows.Scan(&r.ID, &r.RepoID, &r.FromEntityID, &r.ToEntityID, &r.Kind, &r.Description, &r.Strength, &provJSON, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.RepoID, &r.FromEntityID, &r.ToEntityID, &r.Kind, &r.Description, &r.Strength, &r.Confidence, &provJSON, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scanning relationship: %w", err)
 		}
 		if err := json.Unmarshal(provJSON, &r.Provenance); err != nil {
@@ -130,12 +137,15 @@ func (s *RelationshipStore) ListByRepo(ctx context.Context, repoID uuid.UUID) ([
 		}
 		rels = append(rels, r)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating relationships: %w", err)
+	}
 	return rels, nil
 }
 
 func (s *RelationshipStore) ListDependentsOf(ctx context.Context, entityID uuid.UUID, limit int) ([]Relationship, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, repo_id, from_entity_id, to_entity_id, kind, description, strength, provenance, created_at
+		`SELECT id, repo_id, from_entity_id, to_entity_id, kind, description, strength, confidence, provenance, created_at
 		 FROM relationships WHERE to_entity_id = $1
 		 ORDER BY kind LIMIT $2`, entityID, limit,
 	)
@@ -148,13 +158,16 @@ func (s *RelationshipStore) ListDependentsOf(ctx context.Context, entityID uuid.
 	for rows.Next() {
 		var r Relationship
 		var provJSON []byte
-		if err := rows.Scan(&r.ID, &r.RepoID, &r.FromEntityID, &r.ToEntityID, &r.Kind, &r.Description, &r.Strength, &provJSON, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.RepoID, &r.FromEntityID, &r.ToEntityID, &r.Kind, &r.Description, &r.Strength, &r.Confidence, &provJSON, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scanning relationship: %w", err)
 		}
 		if err := json.Unmarshal(provJSON, &r.Provenance); err != nil {
 			return nil, fmt.Errorf("unmarshaling provenance: %w", err)
 		}
 		rels = append(rels, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating relationships: %w", err)
 	}
 	return rels, nil
 }
@@ -188,6 +201,7 @@ type CrossRepoRelationship struct {
 	Kind         string       `json:"kind"`
 	Description  *string      `json:"description,omitempty"`
 	Strength     string       `json:"strength"`
+	Confidence   float32      `json:"confidence"`
 	Provenance   []Provenance `json:"provenance"`
 	CreatedAt    time.Time    `json:"created_at"`
 }
@@ -203,9 +217,9 @@ func (s *RelationshipStore) CreateCrossRepo(ctx context.Context, cr *CrossRepoRe
 	}
 
 	_, err = s.Pool.Exec(ctx,
-		`INSERT INTO cross_repo_relationships (id, from_entity_id, to_entity_id, from_repo_id, to_repo_id, kind, description, strength, provenance, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		cr.ID, cr.FromEntityID, cr.ToEntityID, cr.FromRepoID, cr.ToRepoID, cr.Kind, cr.Description, cr.Strength, provJSON, cr.CreatedAt,
+		`INSERT INTO cross_repo_relationships (id, from_entity_id, to_entity_id, from_repo_id, to_repo_id, kind, description, strength, confidence, provenance, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		cr.ID, cr.FromEntityID, cr.ToEntityID, cr.FromRepoID, cr.ToRepoID, cr.Kind, cr.Description, cr.Strength, cr.Confidence, provJSON, cr.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting cross-repo relationship: %w", err)
@@ -223,14 +237,15 @@ func (s *RelationshipStore) UpsertCrossRepo(ctx context.Context, cr *CrossRepoRe
 	}
 
 	err = s.Pool.QueryRow(ctx,
-		`INSERT INTO cross_repo_relationships (id, from_entity_id, to_entity_id, from_repo_id, to_repo_id, kind, description, strength, provenance, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		`INSERT INTO cross_repo_relationships (id, from_entity_id, to_entity_id, from_repo_id, to_repo_id, kind, description, strength, confidence, provenance, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		 ON CONFLICT (from_entity_id, to_entity_id, kind) DO UPDATE SET
 		   provenance = EXCLUDED.provenance,
 		   strength = EXCLUDED.strength,
+		   confidence = GREATEST(EXCLUDED.confidence, cross_repo_relationships.confidence),
 		   description = COALESCE(EXCLUDED.description, cross_repo_relationships.description)
 		 RETURNING id`,
-		uuid.New(), cr.FromEntityID, cr.ToEntityID, cr.FromRepoID, cr.ToRepoID, cr.Kind, cr.Description, cr.Strength, provJSON, cr.CreatedAt,
+		uuid.New(), cr.FromEntityID, cr.ToEntityID, cr.FromRepoID, cr.ToRepoID, cr.Kind, cr.Description, cr.Strength, cr.Confidence, provJSON, cr.CreatedAt,
 	).Scan(&cr.ID)
 	if err != nil {
 		return fmt.Errorf("upserting cross-repo relationship: %w", err)
@@ -241,7 +256,7 @@ func (s *RelationshipStore) UpsertCrossRepo(ctx context.Context, cr *CrossRepoRe
 // ListAllCrossRepo returns all cross-repo relationships.
 func (s *RelationshipStore) ListAllCrossRepo(ctx context.Context) ([]CrossRepoRelationship, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, from_entity_id, to_entity_id, from_repo_id, to_repo_id, kind, description, strength, provenance, created_at
+		`SELECT id, from_entity_id, to_entity_id, from_repo_id, to_repo_id, kind, description, strength, confidence, provenance, created_at
 		 FROM cross_repo_relationships ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -253,13 +268,16 @@ func (s *RelationshipStore) ListAllCrossRepo(ctx context.Context) ([]CrossRepoRe
 	for rows.Next() {
 		var r CrossRepoRelationship
 		var provJSON []byte
-		if err := rows.Scan(&r.ID, &r.FromEntityID, &r.ToEntityID, &r.FromRepoID, &r.ToRepoID, &r.Kind, &r.Description, &r.Strength, &provJSON, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.FromEntityID, &r.ToEntityID, &r.FromRepoID, &r.ToRepoID, &r.Kind, &r.Description, &r.Strength, &r.Confidence, &provJSON, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scanning cross-repo relationship: %w", err)
 		}
 		if err := json.Unmarshal(provJSON, &r.Provenance); err != nil {
 			return nil, fmt.Errorf("unmarshaling provenance: %w", err)
 		}
 		rels = append(rels, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating cross-repo relationships: %w", err)
 	}
 	return rels, nil
 }
@@ -269,9 +287,9 @@ func (s *RelationshipStore) GetCrossRepoByID(ctx context.Context, id uuid.UUID) 
 	var r CrossRepoRelationship
 	var provJSON []byte
 	err := s.Pool.QueryRow(ctx,
-		`SELECT id, from_entity_id, to_entity_id, from_repo_id, to_repo_id, kind, description, strength, provenance, created_at
+		`SELECT id, from_entity_id, to_entity_id, from_repo_id, to_repo_id, kind, description, strength, confidence, provenance, created_at
 		 FROM cross_repo_relationships WHERE id = $1`, id,
-	).Scan(&r.ID, &r.FromEntityID, &r.ToEntityID, &r.FromRepoID, &r.ToRepoID, &r.Kind, &r.Description, &r.Strength, &provJSON, &r.CreatedAt)
+	).Scan(&r.ID, &r.FromEntityID, &r.ToEntityID, &r.FromRepoID, &r.ToRepoID, &r.Kind, &r.Description, &r.Strength, &r.Confidence, &provJSON, &r.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("getting cross-repo relationship: %w", err)
 	}
@@ -293,7 +311,7 @@ func (s *RelationshipStore) DeleteCrossRepo(ctx context.Context, id uuid.UUID) e
 // ListCrossRepoByEntity returns all cross-repo relationships involving an entity.
 func (s *RelationshipStore) ListCrossRepoByEntity(ctx context.Context, entityID uuid.UUID) ([]CrossRepoRelationship, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, from_entity_id, to_entity_id, from_repo_id, to_repo_id, kind, description, strength, provenance, created_at
+		`SELECT id, from_entity_id, to_entity_id, from_repo_id, to_repo_id, kind, description, strength, confidence, provenance, created_at
 		 FROM cross_repo_relationships WHERE from_entity_id = $1 OR to_entity_id = $1 ORDER BY kind`, entityID,
 	)
 	if err != nil {
@@ -305,7 +323,7 @@ func (s *RelationshipStore) ListCrossRepoByEntity(ctx context.Context, entityID 
 	for rows.Next() {
 		var r CrossRepoRelationship
 		var provJSON []byte
-		if err := rows.Scan(&r.ID, &r.FromEntityID, &r.ToEntityID, &r.FromRepoID, &r.ToRepoID, &r.Kind, &r.Description, &r.Strength, &provJSON, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.FromEntityID, &r.ToEntityID, &r.FromRepoID, &r.ToRepoID, &r.Kind, &r.Description, &r.Strength, &r.Confidence, &provJSON, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scanning cross-repo relationship: %w", err)
 		}
 		if err := json.Unmarshal(provJSON, &r.Provenance); err != nil {
@@ -313,13 +331,16 @@ func (s *RelationshipStore) ListCrossRepoByEntity(ctx context.Context, entityID 
 		}
 		rels = append(rels, r)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating cross-repo relationships: %w", err)
+	}
 	return rels, nil
 }
 
 // ListCrossRepoByRepo returns all cross-repo relationships involving a repo.
 func (s *RelationshipStore) ListCrossRepoByRepo(ctx context.Context, repoID uuid.UUID) ([]CrossRepoRelationship, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, from_entity_id, to_entity_id, from_repo_id, to_repo_id, kind, description, strength, provenance, created_at
+		`SELECT id, from_entity_id, to_entity_id, from_repo_id, to_repo_id, kind, description, strength, confidence, provenance, created_at
 		 FROM cross_repo_relationships WHERE from_repo_id = $1 OR to_repo_id = $1 ORDER BY kind`, repoID,
 	)
 	if err != nil {
@@ -331,13 +352,16 @@ func (s *RelationshipStore) ListCrossRepoByRepo(ctx context.Context, repoID uuid
 	for rows.Next() {
 		var r CrossRepoRelationship
 		var provJSON []byte
-		if err := rows.Scan(&r.ID, &r.FromEntityID, &r.ToEntityID, &r.FromRepoID, &r.ToRepoID, &r.Kind, &r.Description, &r.Strength, &provJSON, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.FromEntityID, &r.ToEntityID, &r.FromRepoID, &r.ToRepoID, &r.Kind, &r.Description, &r.Strength, &r.Confidence, &provJSON, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scanning cross-repo relationship: %w", err)
 		}
 		if err := json.Unmarshal(provJSON, &r.Provenance); err != nil {
 			return nil, fmt.Errorf("unmarshaling provenance: %w", err)
 		}
 		rels = append(rels, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating cross-repo relationships: %w", err)
 	}
 	return rels, nil
 }
@@ -358,6 +382,9 @@ func (s *RelationshipStore) TraverseFromEntity(ctx context.Context, seedID uuid.
 	if opts.FactsPerEntity <= 0 {
 		opts.FactsPerEntity = 10
 	}
+	if opts.MinConfidence > 1.0 {
+		opts.MinConfidence = 1.0
+	}
 
 	// Build relationship kind filter clause
 	relKindFilter := ""
@@ -370,14 +397,20 @@ func (s *RelationshipStore) TraverseFromEntity(ctx context.Context, seedID uuid.
 		argIdx++
 	}
 
+	if opts.MinConfidence > 0 {
+		relKindFilter += fmt.Sprintf(" AND r.confidence >= $%d", argIdx)
+		args = append(args, opts.MinConfidence)
+		argIdx++
+	}
+
 	// Build the source tables — either just relationships, or UNION with cross_repo_relationships
 	relSource := "relationships"
 	if opts.CrossRepo {
 		relSource = `(
-			SELECT id, repo_id, from_entity_id, to_entity_id, kind, description, strength, provenance, created_at
+			SELECT id, repo_id, from_entity_id, to_entity_id, kind, description, strength, confidence, provenance, created_at
 			FROM relationships
 			UNION ALL
-			SELECT id, from_repo_id AS repo_id, from_entity_id, to_entity_id, kind, description, strength, provenance, created_at
+			SELECT id, from_repo_id AS repo_id, from_entity_id, to_entity_id, kind, description, strength, confidence, provenance, created_at
 			FROM cross_repo_relationships
 		)`
 	}
@@ -419,6 +452,9 @@ func (s *RelationshipStore) TraverseFromEntity(ctx context.Context, seedID uuid.
 		entityDepths[eid] = depth
 		entityIDs = append(entityIDs, eid)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating traversal results: %w", err)
+	}
 
 	if len(entityIDs) == 0 {
 		return &Subgraph{
@@ -443,24 +479,9 @@ func (s *RelationshipStore) TraverseFromEntity(ctx context.Context, seedID uuid.
 	}
 
 	// Fetch all relationships between discovered entities
-	rels, err := s.listRelationshipsBetween(ctx, entityIDs, opts.CrossRepo)
+	rels, err := s.listRelationshipsBetween(ctx, entityIDs, opts)
 	if err != nil {
 		return nil, fmt.Errorf("fetching relationships: %w", err)
-	}
-
-	// Filter by rel kinds if specified
-	if len(opts.RelKinds) > 0 {
-		kindSet := make(map[string]bool, len(opts.RelKinds))
-		for _, k := range opts.RelKinds {
-			kindSet[k] = true
-		}
-		filtered := rels[:0]
-		for _, r := range rels {
-			if kindSet[r.Kind] {
-				filtered = append(filtered, r)
-			}
-		}
-		rels = filtered
 	}
 
 	subgraph := &Subgraph{
@@ -486,21 +507,38 @@ func (s *RelationshipStore) TraverseFromEntity(ctx context.Context, seedID uuid.
 	return subgraph, nil
 }
 
-// listRelationshipsBetween fetches all relationships where both endpoints are in the given entity set.
-func (s *RelationshipStore) listRelationshipsBetween(ctx context.Context, entityIDs []uuid.UUID, crossRepo bool) ([]Relationship, error) {
-	query := `SELECT id, repo_id, from_entity_id, to_entity_id, kind, description, strength, provenance, created_at
-		 FROM relationships
-		 WHERE from_entity_id = ANY($1) AND to_entity_id = ANY($1)`
+// listRelationshipsBetween fetches all relationships where both endpoints are in the given entity set,
+// applying rel kind and confidence filters from TraversalOptions.
+func (s *RelationshipStore) listRelationshipsBetween(ctx context.Context, entityIDs []uuid.UUID, opts TraversalOptions) ([]Relationship, error) {
+	args := []any{entityIDs}
+	argIdx := 2
 
-	if crossRepo {
-		query += `
-		 UNION ALL
-		 SELECT id, from_repo_id AS repo_id, from_entity_id, to_entity_id, kind, description, strength, provenance, created_at
-		 FROM cross_repo_relationships
-		 WHERE from_entity_id = ANY($1) AND to_entity_id = ANY($1)`
+	// Build optional filter clauses
+	filterClause := ""
+	if len(opts.RelKinds) > 0 {
+		filterClause += fmt.Sprintf(" AND kind = ANY($%d)", argIdx)
+		args = append(args, opts.RelKinds)
+		argIdx++
+	}
+	if opts.MinConfidence > 0 {
+		filterClause += fmt.Sprintf(" AND confidence >= $%d", argIdx)
+		args = append(args, opts.MinConfidence)
+		argIdx++
 	}
 
-	rows, err := s.Pool.Query(ctx, query, entityIDs)
+	query := fmt.Sprintf(`SELECT id, repo_id, from_entity_id, to_entity_id, kind, description, strength, confidence, provenance, created_at
+		 FROM relationships
+		 WHERE from_entity_id = ANY($1) AND to_entity_id = ANY($1)%s`, filterClause)
+
+	if opts.CrossRepo {
+		query += fmt.Sprintf(`
+		 UNION ALL
+		 SELECT id, from_repo_id AS repo_id, from_entity_id, to_entity_id, kind, description, strength, confidence, provenance, created_at
+		 FROM cross_repo_relationships
+		 WHERE from_entity_id = ANY($1) AND to_entity_id = ANY($1)%s`, filterClause)
+	}
+
+	rows, err := s.Pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing relationships between entities: %w", err)
 	}
@@ -510,13 +548,16 @@ func (s *RelationshipStore) listRelationshipsBetween(ctx context.Context, entity
 	for rows.Next() {
 		var r Relationship
 		var provJSON []byte
-		if err := rows.Scan(&r.ID, &r.RepoID, &r.FromEntityID, &r.ToEntityID, &r.Kind, &r.Description, &r.Strength, &provJSON, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.RepoID, &r.FromEntityID, &r.ToEntityID, &r.Kind, &r.Description, &r.Strength, &r.Confidence, &provJSON, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scanning relationship: %w", err)
 		}
 		if err := json.Unmarshal(provJSON, &r.Provenance); err != nil {
 			return nil, fmt.Errorf("unmarshaling provenance: %w", err)
 		}
 		rels = append(rels, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating relationships: %w", err)
 	}
 	return rels, nil
 }

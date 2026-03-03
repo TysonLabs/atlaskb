@@ -147,6 +147,8 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		jobStore := &models.JobStore{Pool: cfg.Pool}
 
 		// Order matters for FK constraints
+		flowStore := &models.FlowStore{Pool: cfg.Pool}
+		flowStore.DeleteByRepo(ctx, repo.ID)
 		factStore.DeleteByRepo(ctx, repo.ID)
 		relStore.DeleteByRepo(ctx, repo.ID)
 		decisionStore.DeleteByRepo(ctx, repo.ID)
@@ -258,6 +260,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 					Kind:         models.RelDependsOn,
 					Description:  models.Ptr(fmt.Sprintf("Dependency from %s", dep.Source)),
 					Strength:     models.StrengthStrong,
+					Confidence:   models.ConfRelDeterministicAST,
 					Provenance: []models.Provenance{{
 						SourceType: "file",
 						Repo:       repoName,
@@ -330,6 +333,26 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 					fmt.Printf("  Parsed %d import relationships from %d Go files\n", created, len(goFiles))
 				}
 			}
+		}
+	}
+
+	// Phase 1.7: Tree-sitter structural extraction
+	if (shouldRunPhase(cfg.Phases, "phase1.7") || len(cfg.Phases) == 0) && len(entityRoster) > 0 && manifest != nil {
+		fmt.Println("Phase 1.7: Tree-sitter structural extraction...")
+		cfg.progress("Phase 1.7: Tree-sitter call graph extraction...")
+		ts17Stats, tsErr := RunPhase17(ctx, Phase17Config{
+			RepoID:   repo.ID,
+			RepoName: repoName,
+			RepoPath: repoInfo.RootPath,
+			Manifest: manifest,
+			Roster:   entityRoster,
+			Pool:     cfg.Pool,
+		})
+		if tsErr != nil {
+			fmt.Printf("  Warning: Tree-sitter extraction failed: %v\n", tsErr)
+		} else if ts17Stats.FilesProcessed > 0 {
+			fmt.Printf("  Tree-sitter: %d files, %d calls resolved, %d inheritance links\n",
+				ts17Stats.FilesProcessed, ts17Stats.CallsResolved, ts17Stats.InheritanceFound)
 		}
 	}
 
@@ -442,6 +465,23 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		}
 	}
 
+	// Phase 2.7: Execution flow detection
+	if shouldRunPhase(cfg.Phases, "flows") || shouldRunPhase(cfg.Phases, "phase2") || len(cfg.Phases) == 0 {
+		fmt.Println("Phase 2.7: Detecting execution flows...")
+		cfg.progress("Phase 2.7: Detecting execution flows...")
+		flowStats, err := RunPhaseFlows(ctx, FlowsConfig{
+			RepoID:   repo.ID,
+			RepoName: repoName,
+			Pool:     cfg.Pool,
+		})
+		if err != nil {
+			fmt.Printf("  Warning: flow detection failed: %v\n", err)
+		} else if flowStats != nil && flowStats.FlowsCreated > 0 {
+			fmt.Printf("  Detected %d entry points, created %d flows (%d skipped)\n",
+				flowStats.EntryPoints, flowStats.FlowsCreated, flowStats.FlowsSkipped)
+		}
+	}
+
 	if err := ctx.Err(); err != nil {
 		fmt.Println("\nInterrupted — progress saved. Re-run to continue.")
 		return result, nil
@@ -551,6 +591,30 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 			LLM:      cfg.LLM,
 		}); err != nil {
 			fmt.Printf("  Warning: phase 5 summary failed: %v\n", err)
+		}
+	}
+
+	// Phase 6: Functional clustering
+	if shouldRunPhase(cfg.Phases, "phase6") || len(cfg.Phases) == 0 {
+		// Reset job if re-running
+		if len(cfg.Phases) > 0 {
+			jobStore := &models.JobStore{Pool: cfg.Pool}
+			existing, _ := jobStore.GetByTarget(ctx, repo.ID, models.PhasePhase6, "clustering")
+			if existing != nil && existing.Status == models.JobCompleted {
+				cfg.Pool.Exec(ctx, `DELETE FROM extraction_jobs WHERE id = $1`, existing.ID)
+			}
+		}
+		fmt.Println("Phase 6: Functional clustering...")
+		cfg.progress("Phase 6: Detecting functional communities...")
+		phase6Stats, err := RunPhase6(ctx, Phase6Config{
+			RepoID: repo.ID, RepoName: repoName, Model: cfg.SynthesisModel,
+			Pool: cfg.Pool, LLM: cfg.LLM, MinClusterSize: 3,
+		})
+		if err != nil {
+			fmt.Printf("  Warning: phase 6 clustering failed: %v\n", err)
+		} else if phase6Stats != nil {
+			fmt.Printf("  Found %d clusters (modularity=%.3f) across %d entities\n",
+				phase6Stats.ClustersFound, phase6Stats.Modularity, phase6Stats.EntitiesInGraph)
 		}
 	}
 

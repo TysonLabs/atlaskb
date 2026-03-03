@@ -258,6 +258,7 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 					Kind:         er.Kind,
 					Description:  models.Ptr(er.Description),
 					Strength:     er.Strength,
+					Confidence:   RelConfidence(models.ConfRelLLMBackfill, er.Strength),
 					Provenance: []models.Provenance{{
 						SourceType: "file",
 						Repo:       cfg.RepoName,
@@ -312,6 +313,7 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 			Kind:         models.RelOwns,
 			Description:  models.Ptr(fmt.Sprintf("%s is a method on %s", e.Name, ownerEntity.Name)),
 			Strength:     models.StrengthStrong,
+			Confidence:   models.ConfRelDeterministicOwns,
 			Provenance: []models.Provenance{{
 				SourceType: "file",
 				Repo:       cfg.RepoName,
@@ -434,6 +436,7 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 						Kind:         er.Kind,
 						Description:  models.Ptr(er.Description),
 						Strength:     er.Strength,
+						Confidence:   RelConfidence(models.ConfRelLLMBackfill, er.Strength),
 						Provenance: []models.Provenance{{
 							SourceType: "file",
 							Repo:       cfg.RepoName,

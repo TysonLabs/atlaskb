@@ -111,6 +111,15 @@ func (e *Engine) SearchTriplets(ctx context.Context, question string, repoIDs []
 		return nil, fmt.Errorf("computing similarity scores: %w", err)
 	}
 
+	// Fallback: use summary embedding similarity for entities with no matching facts
+	entityStore := &models.EntityStore{Pool: e.Pool}
+	summaryScores, _ := entityStore.MaxSummarySimilarity(ctx, queryVec, entityIDs)
+	for eid, score := range summaryScores {
+		if _, hasFact := simScores[eid]; !hasFact {
+			simScores[eid] = score * 0.8 // discount vs fact-based similarity
+		}
+	}
+
 	// Build target repo set for same-repo boosting
 	targetRepoSet := make(map[uuid.UUID]bool, len(repoIDs))
 	for _, rid := range repoIDs {

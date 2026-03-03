@@ -268,6 +268,20 @@ var SchemaGitLog = &llm.JSONSchema{
 }`),
 }
 
+var SchemaClusterLabel = &llm.JSONSchema{
+	Name: "cluster_label",
+	Schema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "label": { "type": "string" },
+    "description": { "type": "string" },
+    "domain": { "type": "string" }
+  },
+  "required": ["label","description","domain"],
+  "additionalProperties": false
+}`),
+}
+
 var SchemaDedup = &llm.JSONSchema{
 	Name: "dedup_decision",
 	Schema: json.RawMessage(`{

@@ -256,6 +256,46 @@ func (s *FactStore) SearchByKeyword(ctx context.Context, query string, repoIDs [
 	return facts, nil
 }
 
+// SearchByFTSRanked performs full-text search using ts_rank_cd (cover density ranking).
+// Unlike SearchByKeyword it has no minimum score threshold — the full ranked list is
+// returned so the caller can feed it into Reciprocal Rank Fusion.
+func (s *FactStore) SearchByFTSRanked(ctx context.Context, query string, repoIDs []uuid.UUID, limit int) ([]ScoredFact, error) {
+	sql := `SELECT id, entity_id, repo_id, claim, dimension, category, confidence, provenance, superseded_by, created_at, updated_at,
+		 ts_rank_cd(claim_tsv, websearch_to_tsquery('english', $1)) AS score
+		 FROM facts WHERE claim_tsv @@ websearch_to_tsquery('english', $1) AND superseded_by IS NULL`
+	args := []any{query}
+	argIdx := 2
+
+	if len(repoIDs) > 0 {
+		sql += fmt.Sprintf(" AND repo_id = ANY($%d)", argIdx)
+		args = append(args, repoIDs)
+		argIdx++
+	}
+
+	sql += fmt.Sprintf(" ORDER BY score DESC LIMIT $%d", argIdx)
+	args = append(args, limit)
+
+	rows, err := s.Pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("FTS ranked search: %w", err)
+	}
+	defer rows.Close()
+
+	var facts []ScoredFact
+	for rows.Next() {
+		var f ScoredFact
+		var provJSON []byte
+		if err := rows.Scan(&f.ID, &f.EntityID, &f.RepoID, &f.Claim, &f.Dimension, &f.Category, &f.Confidence, &provJSON, &f.SupersededBy, &f.CreatedAt, &f.UpdatedAt, &f.Score); err != nil {
+			return nil, fmt.Errorf("scanning fact: %w", err)
+		}
+		if err := json.Unmarshal(provJSON, &f.Provenance); err != nil {
+			return nil, fmt.Errorf("unmarshaling provenance: %w", err)
+		}
+		facts = append(facts, f)
+	}
+	return facts, nil
+}
+
 func (s *FactStore) SetSupersededBy(ctx context.Context, factID, supersededByID uuid.UUID) error {
 	_, err := s.Pool.Exec(ctx,
 		`UPDATE facts SET superseded_by = $2, updated_at = now() WHERE id = $1`,
