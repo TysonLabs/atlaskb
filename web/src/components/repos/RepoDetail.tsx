@@ -3,8 +3,12 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../../api/client";
-import type { RepoDetail as RepoDetailType, IndexingRun, Decision } from "../../types";
+import type { RepoDetail as RepoDetailType, IndexingRun, Decision, FunctionalCluster, ExecutionFlow } from "../../types";
 import { ArrowLeft, X, AlertTriangle, Trash2, RefreshCw, Loader2 } from "lucide-react";
+import { EntityDrawer } from "./EntityDrawer";
+import { ClustersTab } from "./ClustersTab";
+import { FlowsTab } from "./FlowsTab";
+import { RepoGraphTab } from "./RepoGraphTab";
 
 export function RepoDetail() {
   const { id } = useParams<{ id: string }>();
@@ -12,12 +16,21 @@ export function RepoDetail() {
   const [repo, setRepo] = useState<RepoDetailType | null>(null);
   const [runs, setRuns] = useState<IndexingRun[]>([]);
   const [decisions, setDecisions] = useState<Decision[]>([]);
-  const [tab, setTab] = useState<"overview" | "quality" | "history" | "decisions" | "settings">("overview");
+  const [tab, setTab] = useState<"overview" | "clusters" | "flows" | "graph" | "quality" | "history" | "decisions" | "settings">("overview");
   const [indexing, setIndexing] = useState<{ status: string; logs: string[] }>({ status: "idle", logs: [] });
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [drawerEntityId, setDrawerEntityId] = useState<string | null>(null);
+  const [clusters, setClusters] = useState<FunctionalCluster[]>([]);
+  const [flows, setFlows] = useState<ExecutionFlow[]>([]);
+  const [clustersLoading, setClustersLoading] = useState(false);
+  const [flowsLoading, setFlowsLoading] = useState(false);
+  const [clustersLoaded, setClustersLoaded] = useState(false);
+  const [flowsLoaded, setFlowsLoaded] = useState(false);
 
   const refreshData = useCallback(() => {
     if (!id) return;
+    setClustersLoaded(false);
+    setFlowsLoaded(false);
     api.getRepo(id).then(setRepo).catch(console.error);
     api.getRepoIndexingRuns(id).then(setRuns).catch(console.error);
     api.getRepoDecisions(id).then(setDecisions).catch(console.error);
@@ -26,6 +39,26 @@ export function RepoDetail() {
   useEffect(() => {
     refreshData();
   }, [refreshData]);
+
+  // Lazy-load clusters
+  useEffect(() => {
+    if (tab !== "clusters" || !id || clustersLoaded) return;
+    setClustersLoading(true);
+    api.getRepoClusters(id)
+      .then((c) => { setClusters(c); setClustersLoaded(true); })
+      .catch(console.error)
+      .finally(() => setClustersLoading(false));
+  }, [tab, id, clustersLoaded]);
+
+  // Lazy-load flows
+  useEffect(() => {
+    if (tab !== "flows" || !id || flowsLoaded) return;
+    setFlowsLoading(true);
+    api.getRepoFlows(id)
+      .then((f) => { setFlows(f); setFlowsLoaded(true); })
+      .catch(console.error)
+      .finally(() => setFlowsLoading(false));
+  }, [tab, id, flowsLoaded]);
 
   // Check for in-flight indexing on mount
   useEffect(() => {
@@ -142,16 +175,16 @@ export function RepoDetail() {
 
       {/* Tabs */}
       <div className="border-b border-edge mb-4">
-        <div className="flex gap-4">
-          {(["overview", "quality", "history", "decisions", "settings"] as const).map((t) => (
+        <div className="flex gap-4 overflow-x-auto">
+          {(["overview", "clusters", "flows", "graph", "quality", "history", "decisions", "settings"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`pb-2 text-sm font-medium border-b-2 transition-colors ${
+              className={`pb-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
                 tab === t ? "border-accent text-accent" : "border-transparent text-foreground-secondary hover:text-foreground"
               }`}
             >
-              {t === "overview" ? "Overview" : t === "quality" ? "Quality Breakdown" : t === "history" ? "Indexing History" : t === "decisions" ? `Decisions (${decisions.length})` : "Settings"}
+              {t === "overview" ? "Overview" : t === "clusters" ? "Clusters" : t === "flows" ? "Flows" : t === "graph" ? "Graph" : t === "quality" ? "Quality" : t === "history" ? "History" : t === "decisions" ? `Decisions (${decisions.length})` : "Settings"}
             </button>
           ))}
         </div>
@@ -263,6 +296,18 @@ export function RepoDetail() {
         </div>
       )}
 
+      {tab === "clusters" && (
+        <ClustersTab clusters={clusters} loading={clustersLoading} onEntityClick={setDrawerEntityId} />
+      )}
+
+      {tab === "flows" && (
+        <FlowsTab flows={flows} loading={flowsLoading} onEntityClick={setDrawerEntityId} />
+      )}
+
+      {tab === "graph" && (
+        <RepoGraphTab repoId={id!} onEntityClick={setDrawerEntityId} selectedEntityId={drawerEntityId ?? undefined} />
+      )}
+
       {tab === "settings" && (
         <SettingsTab
           repo={repo}
@@ -272,6 +317,16 @@ export function RepoDetail() {
           isIndexing={isRunning}
         />
       )}
+
+      <EntityDrawer
+        entityId={drawerEntityId}
+        onClose={() => setDrawerEntityId(null)}
+        onEntityClick={setDrawerEntityId}
+        onFocusInGraph={(entityId) => {
+          setDrawerEntityId(entityId);
+          setTab("graph");
+        }}
+      />
     </div>
   );
 }

@@ -60,6 +60,8 @@ func (s *Server) buildRouter() chi.Router {
 		r.Get("/repos/{id}/reindex/status", s.handleReindexStatus)
 		r.Get("/repos/{id}/indexing-runs", s.handleRepoIndexingRuns)
 		r.Get("/repos/{id}/decisions", s.handleRepoDecisions)
+		r.Get("/repos/{id}/clusters", s.handleRepoClusters)
+		r.Get("/repos/{id}/flows", s.handleRepoFlows)
 
 		r.Get("/entities", s.handleListEntities)
 		r.Get("/entities/{id}", s.handleGetEntity)

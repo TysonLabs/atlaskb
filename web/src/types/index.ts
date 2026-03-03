@@ -251,3 +251,29 @@ export interface IndexingJobSummary {
   latest_log: string;
   is_batch: boolean;
 }
+
+export interface ExecutionFlow {
+  id: string;
+  repo_id: string;
+  entry_entity_id: string;
+  label: string;
+  step_entity_ids: string[];
+  step_names: string[];
+  depth: number;
+  entry_entity?: Entity;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FunctionalCluster {
+  id: string;
+  repo_id: string;
+  kind: string;
+  name: string;
+  qualified_name: string;
+  summary?: string;
+  capabilities?: string[];
+  members: Entity[];
+  created_at: string;
+  updated_at: string;
+}

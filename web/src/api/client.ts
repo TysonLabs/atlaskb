@@ -16,6 +16,8 @@ import type {
   BatchStatus,
   IndexingJobSummary,
   CrossRepoLink,
+  FunctionalCluster,
+  ExecutionFlow,
 } from "../types";
 
 const BASE = "/api";
@@ -81,6 +83,8 @@ export const api = {
     get<{ status: string; logs: string[] }>(`/repos/${id}/reindex/status`),
   getRepoIndexingRuns: (id: string) => get<IndexingRun[]>(`/repos/${id}/indexing-runs`),
   getRepoDecisions: (id: string) => get<Decision[]>(`/repos/${id}/decisions`),
+  getRepoClusters: (id: string) => get<FunctionalCluster[]>(`/repos/${id}/clusters`),
+  getRepoFlows: (id: string) => get<ExecutionFlow[]>(`/repos/${id}/flows`),
 
   listEntities: (params: {
     repo_id?: string;
