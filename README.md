@@ -106,6 +106,14 @@ End-to-end setup and release steps are documented in [docs/homebrew-private-tap.
 
 ## Running AtlasKB
 
+First-time setup:
+
+```bash
+atlaskb setup
+```
+
+`atlaskb configure` and `atlaskb init` are aliases.
+
 Start the combined runtime (dashboard + MCP HTTP endpoint):
 
 ```bash

@@ -18,9 +18,13 @@ import (
 )
 
 var setupCmd = &cobra.Command{
-	Use:   "setup",
+	Use: "setup",
+	Aliases: []string{
+		"configure",
+		"init",
+	},
 	Short: "Interactive setup wizard for AtlasKB",
-	Long:  "Configures database connection, API keys, and runs migrations.",
+	Long:  "Configures AtlasKB database, runtime, model, and GitHub integration settings.",
 	RunE:  runSetup,
 }
 
@@ -288,10 +292,61 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		break
 	}
 
-	// --- Step 4: Pipeline settings ---
+	// --- Step 4: Runtime settings ---
+	serverPort := strconv.Itoa(existing.Server.Port)
+	if existing.Server.Port <= 0 {
+		serverPort = "3000"
+	}
+	chatsDir := existing.Server.ChatsDir
+	runtimePort := 3000
+
+	for {
+		fmt.Println(titleStyle.Render("Runtime Settings"))
+
+		runtimeForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Dashboard/MCP HTTP Port").
+					Description("Used by `atlaskb` and `atlaskb serve`").
+					Value(&serverPort),
+				huh.NewInput().
+					Title("Chats Directory (optional)").
+					Description("Leave empty for ~/.atlaskb/chats").
+					Value(&chatsDir),
+			),
+		)
+
+		if err := runtimeForm.Run(); err != nil {
+			return fmt.Errorf("runtime form: %w", err)
+		}
+
+		port, err := strconv.Atoi(serverPort)
+		if err != nil || port < 1 || port > 65535 {
+			fmt.Println(errorStyle.Render("  Port must be a number between 1 and 65535"))
+			if !confirmRetry() {
+				return fmt.Errorf("setup cancelled")
+			}
+			continue
+		}
+
+		runtimePort = port
+		chatsDir = strings.TrimSpace(chatsDir)
+		fmt.Println()
+		break
+	}
+
+	// --- Step 5: Pipeline settings ---
 	concurrency := strconv.Itoa(existing.Pipeline.Concurrency)
 	if concurrency == "0" {
 		concurrency = "2"
+	}
+	extractionModel := existing.Pipeline.ExtractionModel
+	if extractionModel == "" {
+		extractionModel = "qwen/qwen3.5-35b-a3b"
+	}
+	synthesisModel := existing.Pipeline.SynthesisModel
+	if synthesisModel == "" {
+		synthesisModel = "qwen/qwen3.5-35b-a3b"
 	}
 
 	var conc int
@@ -302,7 +357,14 @@ func runSetup(cmd *cobra.Command, args []string) error {
 			huh.NewGroup(
 				huh.NewInput().
 					Title("Concurrency (parallel LLM calls)").
-					Value(&concurrency),
+					Value(&concurrency).
+					Description("Higher values are faster but use more model capacity"),
+				huh.NewInput().
+					Title("Extraction Model").
+					Value(&extractionModel),
+				huh.NewInput().
+					Title("Synthesis Model").
+					Value(&synthesisModel),
 			),
 		)
 
@@ -319,30 +381,114 @@ func runSetup(cmd *cobra.Command, args []string) error {
 			}
 			continue
 		}
+		if strings.TrimSpace(extractionModel) == "" || strings.TrimSpace(synthesisModel) == "" {
+			fmt.Println(errorStyle.Render("  Extraction and synthesis models are required"))
+			if !confirmRetry() {
+				return fmt.Errorf("setup cancelled")
+			}
+			continue
+		}
+		extractionModel = strings.TrimSpace(extractionModel)
+		synthesisModel = strings.TrimSpace(synthesisModel)
 		fmt.Println()
 		break
 	}
 
-	// Build final config (preserve existing GitHub + Server settings)
-	finalCfg := config.Config{
-		Database:   dbCfg,
-		LLM:        config.LLMConfig{BaseURL: llmURL, APIKey: llmKey},
-		Embeddings: config.EmbeddingsConfig{BaseURL: embURL, Model: embModel, APIKey: embKey},
-		Pipeline: config.PipelineConfig{
-			Concurrency:     conc,
-			ExtractionModel: existing.Pipeline.ExtractionModel,
-			SynthesisModel:  existing.Pipeline.SynthesisModel,
-		},
-		GitHub: existing.GitHub,
-		Server: existing.Server,
+	// --- Step 6: GitHub integration (optional but recommended) ---
+	ghToken := existing.GitHub.Token
+	ghAPIURL := existing.GitHub.APIURL
+	if ghAPIURL == "" {
+		ghAPIURL = "https://api.github.com/graphql"
+	}
+	ghEnterpriseHost := existing.GitHub.EnterpriseHost
+	ghMaxPRs := strconv.Itoa(existing.GitHub.MaxPRs)
+	if existing.GitHub.MaxPRs <= 0 {
+		ghMaxPRs = "200"
+	}
+	ghBatchSize := strconv.Itoa(existing.GitHub.PRBatchSize)
+	if existing.GitHub.PRBatchSize <= 0 {
+		ghBatchSize = "10"
 	}
 
-	if finalCfg.Pipeline.ExtractionModel == "" {
-		finalCfg.Pipeline.ExtractionModel = "qwen/qwen3.5-35b-a3b"
+	var maxPRs, batchSize int
+	for {
+		fmt.Println(titleStyle.Render("GitHub Integration"))
+
+		ghForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("GitHub Token (optional)").
+					Description("Needed for PR mining in Phase 3; leave blank to skip").
+					EchoMode(huh.EchoModePassword).
+					Value(&ghToken),
+				huh.NewInput().
+					Title("GitHub API URL").
+					Description("Use default for github.com; set GHE GraphQL endpoint for enterprise").
+					Value(&ghAPIURL),
+				huh.NewInput().
+					Title("GitHub Enterprise Host (optional)").
+					Description("Host used to detect enterprise remotes, e.g. github.acme.com").
+					Value(&ghEnterpriseHost),
+				huh.NewInput().
+					Title("Max PRs to Mine").
+					Value(&ghMaxPRs),
+				huh.NewInput().
+					Title("PR Batch Size").
+					Value(&ghBatchSize),
+			),
+		)
+		if err := ghForm.Run(); err != nil {
+			return fmt.Errorf("github form: %w", err)
+		}
+
+		if strings.TrimSpace(ghAPIURL) == "" {
+			fmt.Println(errorStyle.Render("  GitHub API URL is required"))
+			if !confirmRetry() {
+				return fmt.Errorf("setup cancelled")
+			}
+			continue
+		}
+
+		var err error
+		maxPRs, err = strconv.Atoi(ghMaxPRs)
+		if err != nil || maxPRs < 1 {
+			fmt.Println(errorStyle.Render("  Max PRs must be a number >= 1"))
+			if !confirmRetry() {
+				return fmt.Errorf("setup cancelled")
+			}
+			continue
+		}
+		batchSize, err = strconv.Atoi(ghBatchSize)
+		if err != nil || batchSize < 1 {
+			fmt.Println(errorStyle.Render("  PR batch size must be a number >= 1"))
+			if !confirmRetry() {
+				return fmt.Errorf("setup cancelled")
+			}
+			continue
+		}
+
+		ghToken = strings.TrimSpace(ghToken)
+		ghAPIURL = strings.TrimSpace(ghAPIURL)
+		ghEnterpriseHost = strings.TrimSpace(ghEnterpriseHost)
+		fmt.Println()
+		break
 	}
-	if finalCfg.Pipeline.SynthesisModel == "" {
-		finalCfg.Pipeline.SynthesisModel = "qwen/qwen3.5-35b-a3b"
-	}
+
+	// Build final config by mutating existing so untouched defaults/settings remain intact.
+	finalCfg := existing
+	finalCfg.Database = dbCfg
+	finalCfg.LLM = config.LLMConfig{BaseURL: llmURL, APIKey: llmKey}
+	finalCfg.Embeddings = config.EmbeddingsConfig{BaseURL: embURL, Model: embModel, APIKey: embKey}
+	finalCfg.Pipeline.Concurrency = conc
+	finalCfg.Pipeline.ExtractionModel = extractionModel
+	finalCfg.Pipeline.SynthesisModel = synthesisModel
+	finalCfg.Server.Port = runtimePort
+	finalCfg.Server.ChatsDir = chatsDir
+	finalCfg.GitHub.Token = ghToken
+	finalCfg.GitHub.APIURL = ghAPIURL
+	finalCfg.GitHub.EnterpriseHost = ghEnterpriseHost
+	finalCfg.GitHub.MaxPRs = maxPRs
+	finalCfg.GitHub.PRBatchSize = batchSize
 
 	// Save
 	if err := config.Save(finalCfg, cfgPath); err != nil {
@@ -408,6 +554,7 @@ func runSetup(cmd *cobra.Command, args []string) error {
 
 	fmt.Println()
 	fmt.Println(dimStyle.Render("  Next steps:"))
+	fmt.Println(dimStyle.Render("    atlaskb                         Start dashboard + MCP endpoint"))
 	fmt.Println(dimStyle.Render("    atlaskb index /path/to/repo    Index a repository"))
 	fmt.Println(dimStyle.Render("    atlaskb ask \"question\"         Ask about your code"))
 	fmt.Println()
