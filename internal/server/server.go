@@ -12,6 +12,7 @@ import (
 	"github.com/tgeorge06/atlaskb/internal/embeddings"
 	"github.com/tgeorge06/atlaskb/internal/llm"
 	"github.com/tgeorge06/atlaskb/internal/mcp"
+	"github.com/tgeorge06/atlaskb/internal/version"
 )
 
 type Server struct {
@@ -98,7 +99,7 @@ func (s *Server) buildRouter() chi.Router {
 	})
 
 	// MCP over Streamable HTTP — allows N agents to connect over HTTP
-	mcpSrv := gomcp.NewServer(&gomcp.Implementation{Name: "atlaskb", Version: "0.1.0"}, nil)
+	mcpSrv := gomcp.NewServer(&gomcp.Implementation{Name: "atlaskb", Version: version.Version}, nil)
 	mcp.RegisterTools(mcpSrv, s.pool, s.embedder)
 	mcpHandler := gomcp.NewStreamableHTTPHandler(func(*http.Request) *gomcp.Server {
 		return mcpSrv

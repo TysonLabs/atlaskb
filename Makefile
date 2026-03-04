@@ -1,11 +1,18 @@
 BINARY := atlaskb
 PKG := github.com/tgeorge06/atlaskb
 CMD := ./cmd/atlaskb
+VERSION ?= dev
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w \
+	-X $(PKG)/internal/version.Version=$(VERSION) \
+	-X $(PKG)/internal/version.Commit=$(COMMIT) \
+	-X $(PKG)/internal/version.Date=$(DATE)
 
 .PHONY: build run test lint clean web build-full dev-web dev-server
 
 build:
-	go build -o bin/$(BINARY) $(CMD)
+	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) $(CMD)
 
 run: build
 	./bin/$(BINARY)

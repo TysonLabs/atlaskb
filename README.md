@@ -98,6 +98,12 @@ Two modes, one graph:
 
 AtlasKB is in the design and planning phase. See [docs/](docs/) for detailed design documents.
 
+## Installation (Private Homebrew Tap)
+
+AtlasKB can be installed on macOS through a private Homebrew tap.
+
+End-to-end setup and release steps are documented in [docs/homebrew-private-tap.md](docs/homebrew-private-tap.md).
+
 ## License
 
 TBD

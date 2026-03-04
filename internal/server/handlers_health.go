@@ -1,6 +1,10 @@
 package server
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/tgeorge06/atlaskb/internal/version"
+)
 
 type healthResponse struct {
 	Status        string `json:"status"`
@@ -12,7 +16,7 @@ type healthResponse struct {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	resp := healthResponse{Version: "0.1.0"}
+	resp := healthResponse{Version: version.Version}
 
 	err := s.pool.QueryRow(r.Context(),
 		`SELECT

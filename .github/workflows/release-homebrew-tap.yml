@@ -1,0 +1,70 @@
+name: Release Homebrew Tap
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    name: Publish Formula
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release metadata
+        id: meta
+        env:
+          HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
+          HOMEBREW_SOURCE_REPO: ${{ vars.HOMEBREW_SOURCE_REPO }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          TAP_REPO="${HOMEBREW_TAP_REPO:-${GITHUB_REPOSITORY_OWNER}/homebrew-atlaskb}"
+          SOURCE_REPO="${HOMEBREW_SOURCE_REPO:-ssh://git@github.com/${GITHUB_REPOSITORY}.git}"
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "tap_repo=${TAP_REPO}" >> "$GITHUB_OUTPUT"
+          echo "source_repo=${SOURCE_REPO}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate formula
+        run: |
+          set -euo pipefail
+          scripts/generate-homebrew-formula.sh \
+            --tag "${{ steps.meta.outputs.tag }}" \
+            --revision "${GITHUB_SHA}" \
+            --source-repo "${{ steps.meta.outputs.source_repo }}" \
+            --output /tmp/atlaskb.rb
+
+      - name: Checkout tap repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.meta.outputs.tap_repo }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+          fetch-depth: 0
+
+      - name: Commit and push formula update
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p tap/Formula
+          cp /tmp/atlaskb.rb tap/Formula/atlaskb.rb
+
+          cd tap
+          if git diff --quiet -- Formula/atlaskb.rb; then
+            echo "No formula changes detected."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/atlaskb.rb
+          git commit -m "atlaskb ${TAG}"
+          git push origin HEAD:main

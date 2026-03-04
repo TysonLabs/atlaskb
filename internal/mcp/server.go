@@ -17,6 +17,7 @@ import (
 	"github.com/tgeorge06/atlaskb/internal/embeddings"
 	"github.com/tgeorge06/atlaskb/internal/models"
 	"github.com/tgeorge06/atlaskb/internal/query"
+	"github.com/tgeorge06/atlaskb/internal/version"
 )
 
 type Server struct {
@@ -125,7 +126,7 @@ The path is relative to the repo root (e.g. "internal/server/handlers.go"). File
 
 func (s *Server) Run(ctx context.Context) error {
 	srv := gomcp.NewServer(
-		&gomcp.Implementation{Name: "atlaskb", Version: "0.1.0"},
+		&gomcp.Implementation{Name: "atlaskb", Version: version.Version},
 		nil,
 	)
 	RegisterTools(srv, s.pool, s.embedder)

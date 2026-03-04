@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tgeorge06/atlaskb/internal/config"
 	"github.com/tgeorge06/atlaskb/internal/db"
+	"github.com/tgeorge06/atlaskb/internal/version"
 )
 
 var (
@@ -25,8 +27,8 @@ var rootCmd = &cobra.Command{
 	Short: "AtlasKB — a knowledge base built from your codebase",
 	Long:  "AtlasKB indexes repositories via multi-phase LLM extraction and stores knowledge in a Postgres+pgvector graph for natural language querying.",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Skip DB connection for setup and config commands
-		if cmd.Name() == "setup" || cmd.Parent() != nil && cmd.Parent().Name() == "config" {
+		// Skip DB connection for commands that don't need runtime services.
+		if skipDBConnection(cmd) {
 			// Still load config for config subcommands
 			if cmd.Parent() != nil && cmd.Parent().Name() == "config" {
 				var err error
@@ -60,6 +62,36 @@ var rootCmd = &cobra.Command{
 			pool.Close()
 		}
 	},
+}
+
+func skipDBConnection(cmd *cobra.Command) bool {
+	if cmd.Name() == "setup" || cmd.Name() == "version" || cmd.Name() == "help" {
+		return true
+	}
+	return cmd.Parent() != nil && cmd.Parent().Name() == "config"
+}
+
+func versionOutput() string {
+	if version.Version == "" {
+		return "dev"
+	}
+	return version.Version
+}
+
+func writeVersionInfo() error {
+	if jsonOut {
+		payload := map[string]string{
+			"version": versionOutput(),
+			"commit":  version.Commit,
+			"date":    version.Date,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(payload)
+	}
+
+	fmt.Println(versionOutput())
+	return nil
 }
 
 func init() {
