@@ -208,6 +208,14 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		llmURL = "http://localhost:1234"
 	}
 	llmKey := existing.LLM.APIKey
+	extractionModel := existing.Pipeline.ExtractionModel
+	if extractionModel == "" {
+		extractionModel = "qwen/qwen3.5-35b-a3b"
+	}
+	synthesisModel := existing.Pipeline.SynthesisModel
+	if synthesisModel == "" {
+		synthesisModel = "qwen/qwen3.5-35b-a3b"
+	}
 
 	for {
 		fmt.Println(titleStyle.Render("LLM Configuration"))
@@ -216,8 +224,16 @@ func runSetup(cmd *cobra.Command, args []string) error {
 			huh.NewGroup(
 				huh.NewInput().
 					Title("LLM Server URL").
-					Description("OpenAI-compatible chat completions endpoint (e.g. LM Studio)").
+					Description("OpenAI-compatible endpoint used for both extraction and synthesis. Example: http://localhost:1234").
 					Value(&llmURL),
+				huh.NewInput().
+					Title("Extraction Model").
+					Description("Model used during indexing/extraction phases").
+					Value(&extractionModel),
+				huh.NewInput().
+					Title("Synthesis Model").
+					Description("Model used for question answering and chat responses").
+					Value(&synthesisModel),
 				huh.NewInput().
 					Title("LLM API Key (optional)").
 					EchoMode(huh.EchoModePassword).
@@ -229,8 +245,18 @@ func runSetup(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("LLM form: %w", err)
 		}
 
+		llmURL = strings.TrimSpace(llmURL)
 		if llmURL == "" {
 			fmt.Println(errorStyle.Render("  LLM server URL is required"))
+			if !confirmRetry() {
+				return fmt.Errorf("setup cancelled")
+			}
+			continue
+		}
+		extractionModel = strings.TrimSpace(extractionModel)
+		synthesisModel = strings.TrimSpace(synthesisModel)
+		if extractionModel == "" || synthesisModel == "" {
+			fmt.Println(errorStyle.Render("  Extraction and synthesis models are required"))
 			if !confirmRetry() {
 				return fmt.Errorf("setup cancelled")
 			}
@@ -340,14 +366,6 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	if concurrency == "0" {
 		concurrency = "2"
 	}
-	extractionModel := existing.Pipeline.ExtractionModel
-	if extractionModel == "" {
-		extractionModel = "qwen/qwen3.5-35b-a3b"
-	}
-	synthesisModel := existing.Pipeline.SynthesisModel
-	if synthesisModel == "" {
-		synthesisModel = "qwen/qwen3.5-35b-a3b"
-	}
 
 	var conc int
 	for {
@@ -359,12 +377,6 @@ func runSetup(cmd *cobra.Command, args []string) error {
 					Title("Concurrency (parallel LLM calls)").
 					Value(&concurrency).
 					Description("Higher values are faster but use more model capacity"),
-				huh.NewInput().
-					Title("Extraction Model").
-					Value(&extractionModel),
-				huh.NewInput().
-					Title("Synthesis Model").
-					Value(&synthesisModel),
 			),
 		)
 
@@ -381,15 +393,6 @@ func runSetup(cmd *cobra.Command, args []string) error {
 			}
 			continue
 		}
-		if strings.TrimSpace(extractionModel) == "" || strings.TrimSpace(synthesisModel) == "" {
-			fmt.Println(errorStyle.Render("  Extraction and synthesis models are required"))
-			if !confirmRetry() {
-				return fmt.Errorf("setup cancelled")
-			}
-			continue
-		}
-		extractionModel = strings.TrimSpace(extractionModel)
-		synthesisModel = strings.TrimSpace(synthesisModel)
 		fmt.Println()
 		break
 	}
