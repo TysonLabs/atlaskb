@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -32,59 +34,93 @@ func RegisterTools(srv *gomcp.Server, pool *pgxpool.Pool, embedder embeddings.Cl
 	s := &Server{pool: pool, embedder: embedder}
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name:        "search_knowledge_base",
-		Description: "Search the AtlasKB knowledge graph. mode=facts (default) returns individual fact results. mode=graph returns triplet-ranked (source, relationship, target) subgraph results showing how entities relate.",
+		Name: "search_knowledge_base",
+		Description: `Search the code knowledge graph using natural language. Use this to answer questions like "how does auth work?" or "what patterns are used for error handling?".
+Returns facts (assertions about code) with their source entity, confidence, and provenance.
+mode=facts (default): returns individual ranked facts. mode=graph: returns (entity)-[relationship]->(entity) triplets showing how code entities relate.
+Use this when you don't know which file or entity to look at — it searches across all indexed knowledge.`,
 	}, s.handleSearch)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
 		Name:        "list_repos",
-		Description: "List all repositories indexed in AtlasKB.",
+		Description: "List all repositories indexed in AtlasKB with their names and last indexed timestamps. Call this first to discover available repo names for use with other tools.",
 	}, s.handleListRepos)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name:        "get_conventions",
-		Description: "Get coding conventions and patterns. When repo is specified, returns conventions for that repo. When omitted, returns conventions across all repos, tagged with repo name and deduplicated.",
+		Name: "get_conventions",
+		Description: `Get coding conventions and patterns (e.g. error handling style, naming conventions, import patterns, auth approach).
+Use this to understand HOW code should be written in a repo — before writing new code or reviewing existing code.
+When repo is omitted, returns org-wide conventions across all repos (useful for understanding cross-repo standards).`,
 	}, s.handleGetConventions)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name:        "get_module_context",
-		Description: "Get context about a specific module, file, or code entity. Returns the entity's summary, capabilities, assumptions, facts, and optionally its relationships.",
+		Name: "get_module_context",
+		Description: `Get detailed context about a specific file, function, type, or module. Returns its summary, capabilities, assumptions, and facts.
+Use this when you need to understand what a specific piece of code does before modifying or using it.
+Set depth=deep to also get its relationships (what it calls, what calls it, what it depends on).
+The path parameter accepts file paths (e.g. "internal/server/handlers.go") or qualified names (e.g. "github.com/foo/bar.Handler").`,
 	}, s.handleGetModuleContext)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name:        "get_service_contract",
-		Description: "Get the public contract of a code entity: who depends on it and what invariants it exposes. Useful before modifying a module to understand downstream impact.",
+		Name: "get_service_contract",
+		Description: `Get the public contract of a code entity: who depends on it and what invariants it must maintain.
+Use this BEFORE modifying a function, type, or module to understand what would break — shows all downstream dependents and behavioral contracts.
+Critical for safe refactoring and API changes.`,
 	}, s.handleGetServiceContract)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name:        "get_impact_analysis",
-		Description: "Analyze the dependency graph around a code entity with N-hop traversal. Shows direct impacts, transitive dependency chains, and cross-repo effects. Use max_hops to control traversal depth (default 2, max 5).",
+		Name: "get_impact_analysis",
+		Description: `Analyze the dependency graph around a code entity with N-hop traversal. Shows direct impacts and transitive dependency chains.
+Use this to answer "what would be affected if I change X?" — traces through calls, depends_on, imports, and other relationship types.
+Returns direct impacts (1 hop) and transitive paths (multi-hop chains) with affected repos listed.`,
 	}, s.handleGetImpactAnalysis)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name:        "get_decision_context",
-		Description: "Get architectural decisions linked to a code entity. Returns decision rationale, alternatives considered, and tradeoffs.",
+		Name: "get_decision_context",
+		Description: `Get architectural decisions linked to a code entity — why it was built this way, what alternatives were considered, and what tradeoffs were accepted.
+Use this when you need to understand the rationale behind existing code, or before proposing changes that might conflict with past decisions.`,
 	}, s.handleGetDecisionContext)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name:        "get_task_context",
-		Description: "Get a bundled context package for a coding task. Combines conventions, module context, service contracts, and decisions for a set of files in one call.",
+		Name: "get_task_context",
+		Description: `RECOMMENDED: Start here for any coding task. Bundles conventions, module context, service contracts, decisions, and staleness info for a set of files in one call.
+Prefer this over calling get_module_context, get_service_contract, get_conventions, and get_decision_context separately — it combines all of them efficiently.
+Pass the files you plan to read or modify. Returns everything you need to understand the code and write changes safely.`,
 	}, s.handleGetTaskContext)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name:        "get_execution_flows",
-		Description: "Get detected execution flows (call chains) through the codebase. Shows entry points and the functions they call in sequence. Use 'through' to filter flows passing through a specific function.",
+		Name: "get_execution_flows",
+		Description: `Get detected execution flows (call chains) through the codebase — shows how functions call each other in sequence from entry points.
+Use this to understand runtime behavior: "what happens when HandleRequest is called?" or "what functions does ProcessOrder invoke?".
+Use the 'through' parameter to filter to flows passing through a specific function.`,
 	}, s.handleGetExecutionFlows)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name:        "get_functional_clusters",
-		Description: "Get functional clusters (community detection) for a repository. Returns groups of code entities that form cohesive functional areas based on their call/dependency relationships.",
+		Name: "get_functional_clusters",
+		Description: `Get functional clusters — groups of code entities that form cohesive areas based on their call/dependency relationships.
+Use this to understand the high-level architecture: what are the major subsystems and which files/functions belong to each.
+Useful for onboarding to a new codebase or planning large refactors.`,
 	}, s.handleGetFunctionalClusters)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name:        "get_repo_overview",
-		Description: "Get a high-level overview of a repository including its Phase 5 summary and basic stats (entity, fact, relationship, and decision counts). Useful for agents to quickly understand what a repo contains.",
+		Name: "get_repo_overview",
+		Description: `Get a high-level architectural overview of a repository with entity, fact, relationship, and decision counts.
+Use this to quickly understand what a repo does, its major components, and its scale — before diving into specific files or entities.`,
 	}, s.handleGetRepoOverview)
+
+	gomcp.AddTool(srv, &gomcp.Tool{
+		Name: "search_entities",
+		Description: `Search for code entities (functions, types, modules, services, endpoints, configs) by name or kind.
+Use this to find specific code symbols — e.g. "find all endpoints" or "find functions matching Handler".
+Returns entity name, kind, file path, and summary. Click through to get_module_context for full details.`,
+	}, s.handleSearchEntities)
+
+	gomcp.AddTool(srv, &gomcp.Tool{
+		Name: "get_entity_source",
+		Description: `Read the source code of a file from an indexed repository. Returns the raw file content.
+Use this when you need to see the actual implementation — after using get_module_context to understand what a file does.
+The path is relative to the repo root (e.g. "internal/server/handlers.go"). Files larger than 500KB are truncated.`,
+	}, s.handleGetEntitySource)
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -191,9 +227,9 @@ func entityPath(e *models.Entity) string {
 // ── Input types ──────────────────────────────────────────────────────────────
 
 type searchInput struct {
-	Query string `json:"query" jsonschema:"Natural language search query"`
-	Repo  string `json:"repo,omitempty" jsonschema:"Filter by repository name"`
-	Mode  string `json:"mode,omitempty" jsonschema:"Search mode: facts (default, individual fact ranking) or graph (triplet-ranked subgraph search)"`
+	Query string `json:"query" jsonschema:"Natural language question or keyword search (e.g. 'how does authentication work?' or 'error handling patterns')"`
+	Repo  string `json:"repo,omitempty" jsonschema:"Filter to a specific repository name (omit to search all repos)"`
+	Mode  string `json:"mode,omitempty" jsonschema:"Search mode: facts (default) returns ranked assertions, graph returns entity-relationship triplets"`
 	Limit int    `json:"limit,omitempty" jsonschema:"Max results to return (default 20, max 50)"`
 }
 
@@ -206,8 +242,8 @@ type getConventionsInput struct {
 
 type getModuleContextInput struct {
 	Repo       string `json:"repo" jsonschema:"Repository name (required)"`
-	Path       string `json:"path" jsonschema:"File path or qualified name of the entity (required)"`
-	Depth      string `json:"depth,omitempty" jsonschema:"shallow (default) or deep - deep includes relationships"`
+	Path       string `json:"path" jsonschema:"File path (e.g. 'internal/server/handlers.go') or qualified name (e.g. 'github.com/foo/bar.Handler')"`
+	Depth      string `json:"depth,omitempty" jsonschema:"shallow (default) or deep — deep includes all relationships (calls, imports, depends_on)"`
 	MaxResults int    `json:"max_results,omitempty" jsonschema:"Max results to return (default 50, max 200)"`
 }
 
@@ -234,8 +270,8 @@ type getDecisionContextInput struct {
 
 type getTaskContextInput struct {
 	Repo       string   `json:"repo" jsonschema:"Repository name (required)"`
-	Files      []string `json:"files" jsonschema:"List of file paths or qualified names (required)"`
-	Depth      string   `json:"depth,omitempty" jsonschema:"shallow (default) or deep"`
+	Files      []string `json:"files" jsonschema:"File paths you plan to read or modify (e.g. ['internal/server/handlers.go', 'internal/models/user.go']). Max 20 files."`
+	Depth      string   `json:"depth,omitempty" jsonschema:"shallow (default) or deep — deep includes all relationships per file"`
 	MaxResults int      `json:"max_results,omitempty" jsonschema:"Max results per sub-query (default 50, max 200)"`
 }
 
@@ -252,6 +288,19 @@ type getFunctionalClustersInput struct {
 
 type getRepoOverviewInput struct {
 	Repo string `json:"repo" jsonschema:"Repository name (required)"`
+}
+
+type searchEntitiesInput struct {
+	Repo       string `json:"repo,omitempty" jsonschema:"Filter to a specific repository name (omit to search all repos)"`
+	Query      string `json:"query,omitempty" jsonschema:"Search by name (e.g. 'Handler', 'UserService') — matches partial names"`
+	Kind       string `json:"kind,omitempty" jsonschema:"Filter by entity kind: function, type, module, service, endpoint, config, concept, cluster"`
+	Limit      int    `json:"limit,omitempty" jsonschema:"Max results to return (default 20, max 100)"`
+	Offset     int    `json:"offset,omitempty" jsonschema:"Offset for pagination (default 0)"`
+}
+
+type getEntitySourceInput struct {
+	Repo string `json:"repo" jsonschema:"Repository name (required)"`
+	Path string `json:"path" jsonschema:"File path relative to repo root (e.g. 'internal/server/handlers.go')"`
 }
 
 // ── Response types ───────────────────────────────────────────────────────────
@@ -1660,6 +1709,133 @@ func jsonResult(v any) *gomcp.CallToolResult {
 			&gomcp.TextContent{Text: string(data)},
 		},
 	}
+}
+
+// ── search_entities handler ──────────────────────────────────────────────────
+
+type entityResultItem struct {
+	Name          string   `json:"name"`
+	QualifiedName string   `json:"qualified_name"`
+	Kind          string   `json:"kind"`
+	Path          string   `json:"path,omitempty"`
+	Summary       string   `json:"summary,omitempty"`
+	Repo          string   `json:"repo,omitempty"`
+}
+
+func (s *Server) handleSearchEntities(ctx context.Context, _ *gomcp.CallToolRequest, params searchEntitiesInput) (*gomcp.CallToolResult, any, error) {
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	var repoID *uuid.UUID
+	var repoName string
+	if params.Repo != "" {
+		repo, err := s.resolveRepo(ctx, params.Repo)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		repoID = &repo.ID
+		repoName = repo.Name
+	}
+
+	entityStore := &models.EntityStore{Pool: s.pool}
+	result, err := entityStore.SearchByName(ctx, repoID, params.Query, params.Kind, limit, offset)
+	if err != nil {
+		return errorResult(fmt.Sprintf("searching entities: %v", err)), nil, nil
+	}
+
+	// Resolve repo names for display
+	repoNames := map[uuid.UUID]string{}
+	if repoID != nil {
+		repoNames[*repoID] = repoName
+	} else {
+		repoStore := &models.RepoStore{Pool: s.pool}
+		for _, e := range result.Items {
+			if _, ok := repoNames[e.RepoID]; !ok {
+				r, err := repoStore.GetByID(ctx, e.RepoID)
+				if err == nil && r != nil {
+					repoNames[e.RepoID] = r.Name
+				}
+			}
+		}
+	}
+
+	items := make([]entityResultItem, len(result.Items))
+	for i, e := range result.Items {
+		var path, summary string
+		if e.Path != nil {
+			path = *e.Path
+		}
+		if e.Summary != nil {
+			summary = *e.Summary
+		}
+		items[i] = entityResultItem{
+			Name:          e.Name,
+			QualifiedName: e.QualifiedName,
+			Kind:          e.Kind,
+			Path:          path,
+			Summary:       summary,
+			Repo:          repoNames[e.RepoID],
+		}
+	}
+
+	type response struct {
+		Items []entityResultItem `json:"items"`
+		Total int                `json:"total"`
+	}
+	out := response{Items: items, Total: result.Total}
+	return jsonResult(out), nil, nil
+}
+
+// ── get_entity_source handler ────────────────────────────────────────────────
+
+func (s *Server) handleGetEntitySource(ctx context.Context, _ *gomcp.CallToolRequest, params getEntitySourceInput) (*gomcp.CallToolResult, any, error) {
+	if params.Repo == "" {
+		return errorResult("repo is required"), nil, nil
+	}
+	if params.Path == "" {
+		return errorResult("path is required"), nil, nil
+	}
+
+	repo, err := s.resolveRepo(ctx, params.Repo)
+	if err != nil {
+		return errorResult(err.Error()), nil, nil
+	}
+
+	// SECURITY: Resolve and validate that the requested path is within the repo
+	absRepo, err := filepath.Abs(repo.LocalPath)
+	if err != nil {
+		return errorResult("failed to resolve repo path"), nil, nil
+	}
+	fullPath := filepath.Join(absRepo, filepath.Clean(params.Path))
+	if !strings.HasPrefix(fullPath, absRepo) {
+		return errorResult("path outside repository"), nil, nil
+	}
+
+	content, err := os.ReadFile(fullPath)
+	if err != nil {
+		return errorResult(fmt.Sprintf("file not found: %s", params.Path)), nil, nil
+	}
+
+	// Limit response size
+	if len(content) > 500_000 {
+		content = content[:500_000]
+	}
+
+	type response struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	out := response{Path: params.Path, Content: string(content)}
+	return jsonResult(out), nil, nil
 }
 
 func errorResult(msg string) *gomcp.CallToolResult {

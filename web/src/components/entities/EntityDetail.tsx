@@ -1,20 +1,43 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { api } from "../../api/client";
 import type { EntityDetail as EntityDetailType, Decision } from "../../types";
-import { ArrowLeft, Network } from "lucide-react";
+import { ArrowLeft, Search } from "lucide-react";
 
 export function EntityDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [entity, setEntity] = useState<EntityDetailType | null>(null);
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [tab, setTab] = useState<"facts" | "relationships" | "decisions">("facts");
+  const [factQuery, setFactQuery] = useState("");
+  const [factDimension, setFactDimension] = useState("");
+  const [factCategory, setFactCategory] = useState("");
 
   useEffect(() => {
     if (!id) return;
     api.getEntity(id).then(setEntity).catch(console.error);
     api.getEntityDecisions(id).then(setDecisions).catch(console.error);
   }, [id]);
+
+  const filteredFacts = useMemo(() => {
+    if (!entity) return [];
+    return entity.facts.filter((f) => {
+      if (factQuery && !f.claim.toLowerCase().includes(factQuery.toLowerCase())) return false;
+      if (factDimension && f.dimension !== factDimension) return false;
+      if (factCategory && f.category !== factCategory) return false;
+      return true;
+    });
+  }, [entity, factQuery, factDimension, factCategory]);
+
+  const factDimensions = useMemo(() => {
+    if (!entity) return [];
+    return [...new Set(entity.facts.map((f) => f.dimension))].sort();
+  }, [entity]);
+
+  const factCategories = useMemo(() => {
+    if (!entity) return [];
+    return [...new Set(entity.facts.map((f) => f.category))].sort();
+  }, [entity]);
 
   if (!entity) return <p className="text-foreground-secondary">Loading...</p>;
 
@@ -33,12 +56,7 @@ export function EntityDetailPage() {
           <p className="text-sm text-foreground-secondary">{entity.qualified_name}</p>
           {entity.path && <p className="text-xs text-foreground-muted mt-1 font-mono">{entity.path}</p>}
         </div>
-        <Link
-          to={`/graph?entity=${id}`}
-          className="flex items-center gap-1 text-sm px-3 py-1.5 bg-accent text-surface font-medium rounded-md hover:bg-accent-hover transition-colors"
-        >
-          <Network size={14} /> View Graph
-        </Link>
+        {/* Reserved for future actions */}
       </div>
 
       {entity.summary && (
@@ -91,11 +109,49 @@ export function EntityDetailPage() {
       </div>
 
       {tab === "facts" && (
-        <div className="space-y-2">
+        <div className="space-y-3">
+          {/* Fact filters */}
+          {entity.facts.length > 0 && (
+            <div className="space-y-2">
+              <div className="relative max-w-sm">
+                <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-foreground-muted" />
+                <input
+                  value={factQuery}
+                  onChange={(e) => setFactQuery(e.target.value)}
+                  placeholder="Filter facts..."
+                  className="w-full pl-8 pr-3 py-1.5 border border-edge rounded-lg bg-surface text-foreground placeholder-foreground-muted text-sm focus:outline-none focus:ring-1 focus:ring-accent"
+                />
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {factDimensions.map((d) => (
+                  <button
+                    key={d}
+                    onClick={() => setFactDimension(factDimension === d ? "" : d)}
+                    className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${factDimension === d ? "bg-accent text-surface" : "bg-surface-overlay text-foreground-secondary hover:text-foreground"}`}
+                  >
+                    {d}
+                  </button>
+                ))}
+                <span className="text-foreground-muted mx-1">|</span>
+                {factCategories.map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => setFactCategory(factCategory === c ? "" : c)}
+                    className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${factCategory === c ? "bg-accent text-surface" : "bg-surface-overlay text-foreground-secondary hover:text-foreground"}`}
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-foreground-muted">{filteredFacts.length} of {entity.facts.length} facts</p>
+            </div>
+          )}
           {entity.facts.length === 0 ? (
             <p className="text-sm text-foreground-secondary">No facts.</p>
+          ) : filteredFacts.length === 0 ? (
+            <p className="text-sm text-foreground-secondary">No facts match filters.</p>
           ) : (
-            entity.facts.map((fact) => (
+            filteredFacts.map((fact) => (
               <div key={fact.id} className={`bg-surface-elevated rounded-lg border border-edge p-3${fact.superseded_by ? " opacity-60" : ""}`}>
                 <p className={`text-sm text-foreground${fact.superseded_by ? " line-through" : ""}`}>{fact.claim}</p>
                 {fact.superseded_by && (

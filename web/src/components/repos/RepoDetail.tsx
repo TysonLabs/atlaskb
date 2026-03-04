@@ -3,8 +3,8 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../../api/client";
-import type { RepoDetail as RepoDetailType, IndexingRun, Decision, FunctionalCluster, ExecutionFlow } from "../../types";
-import { ArrowLeft, X, AlertTriangle, Trash2, RefreshCw, Loader2, Settings2 } from "lucide-react";
+import type { RepoDetail as RepoDetailType, IndexingRun, Decision, FunctionalCluster, ExecutionFlow, Entity } from "../../types";
+import { ArrowLeft, X, AlertTriangle, Trash2, RefreshCw, Loader2, Settings2, Search } from "lucide-react";
 import { EntityDrawer } from "./EntityDrawer";
 import { ClustersTab } from "./ClustersTab";
 import { FlowsTab } from "./FlowsTab";
@@ -16,7 +16,7 @@ export function RepoDetail() {
   const [repo, setRepo] = useState<RepoDetailType | null>(null);
   const [runs, setRuns] = useState<IndexingRun[]>([]);
   const [decisions, setDecisions] = useState<Decision[]>([]);
-  const [tab, setTab] = useState<"overview" | "clusters" | "flows" | "chat" | "quality" | "history" | "decisions" | "settings">("overview");
+  const [tab, setTab] = useState<"overview" | "entities" | "clusters" | "flows" | "chat" | "quality" | "history" | "decisions" | "settings">("overview");
   const [indexing, setIndexing] = useState<{ status: string; logs: string[] }>({ status: "idle", logs: [] });
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [drawerEntityId, setDrawerEntityId] = useState<string | null>(null);
@@ -199,7 +199,7 @@ export function RepoDetail() {
       {/* Tabs */}
       <div className="border-b border-edge mb-4">
         <div className="flex gap-4 overflow-x-auto">
-          {(["overview", "clusters", "flows", "chat", "quality", "history", "decisions", "settings"] as const).map((t) => (
+          {(["overview", "entities", "clusters", "flows", "chat", "quality", "history", "decisions", "settings"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -207,7 +207,7 @@ export function RepoDetail() {
                 tab === t ? "border-accent text-accent" : "border-transparent text-foreground-secondary hover:text-foreground"
               }`}
             >
-              {t === "overview" ? "Overview" : t === "clusters" ? "Clusters" : t === "flows" ? "Flows" : t === "chat" ? "Chat" : t === "quality" ? "Quality" : t === "history" ? "History" : t === "decisions" ? `Decisions (${decisions.length})` : "Settings"}
+              {t === "overview" ? "Overview" : t === "entities" ? "Entities" : t === "clusters" ? "Clusters" : t === "flows" ? "Flows" : t === "chat" ? "Chat" : t === "quality" ? "Quality" : t === "history" ? "History" : t === "decisions" ? `Decisions (${decisions.length})` : "Settings"}
             </button>
           ))}
         </div>
@@ -223,6 +223,10 @@ export function RepoDetail() {
             <p className="text-sm text-foreground-secondary">No overview yet — run indexing to generate.</p>
           )}
         </div>
+      )}
+
+      {tab === "entities" && (
+        <RepoEntitiesTab repoId={id!} onEntityClick={setDrawerEntityId} />
       )}
 
       {tab === "quality" && (
@@ -748,6 +752,114 @@ function SettingsTab({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+const ENTITY_KINDS = ["function", "type", "module", "service", "endpoint", "config", "concept", "cluster"];
+
+function RepoEntitiesTab({ repoId, onEntityClick }: { repoId: string; onEntityClick: (id: string) => void }) {
+  const [entities, setEntities] = useState<Entity[]>([]);
+  const [total, setTotal] = useState(0);
+  const [query, setQuery] = useState("");
+  const [kind, setKind] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [offset, setOffset] = useState(0);
+  const limit = 30;
+
+  useEffect(() => {
+    setLoading(true);
+    api.listEntities({ repo_id: repoId, q: query || undefined, kind: kind || undefined, limit, offset })
+      .then((res) => { setEntities(res.items); setTotal(res.total); })
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, [repoId, query, kind, offset]);
+
+  // Reset offset when filters change
+  useEffect(() => { setOffset(0); }, [query, kind]);
+
+  return (
+    <div className="space-y-3">
+      {/* Search + filters */}
+      <div className="flex items-center gap-3">
+        <div className="relative flex-1 max-w-sm">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-foreground-muted" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search entities..."
+            className="w-full pl-8 pr-3 py-1.5 border border-edge rounded-lg bg-surface text-foreground placeholder-foreground-muted text-sm focus:outline-none focus:ring-1 focus:ring-accent"
+          />
+        </div>
+        <div className="flex flex-wrap gap-1">
+          <button
+            onClick={() => setKind("")}
+            className={`px-2 py-1 rounded text-xs font-medium transition-colors ${!kind ? "bg-accent text-surface" : "bg-surface-overlay text-foreground-secondary hover:text-foreground"}`}
+          >
+            All
+          </button>
+          {ENTITY_KINDS.map((k) => (
+            <button
+              key={k}
+              onClick={() => setKind(kind === k ? "" : k)}
+              className={`px-2 py-1 rounded text-xs font-medium transition-colors ${kind === k ? "bg-accent text-surface" : "bg-surface-overlay text-foreground-secondary hover:text-foreground"}`}
+            >
+              {k}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <p className="text-xs text-foreground-muted">{total} entities{query ? ` matching "${query}"` : ""}{kind ? ` of kind "${kind}"` : ""}</p>
+
+      {/* Entity list */}
+      {loading ? (
+        <div className="flex items-center justify-center py-8">
+          <Loader2 size={20} className="animate-spin text-foreground-muted" />
+        </div>
+      ) : entities.length === 0 ? (
+        <p className="text-sm text-foreground-secondary py-4">No entities found.</p>
+      ) : (
+        <div className="bg-surface-elevated rounded-lg border border-edge divide-y divide-edge">
+          {entities.map((e) => (
+            <button
+              key={e.id}
+              onClick={() => onEntityClick(e.id)}
+              className="w-full text-left px-4 py-2.5 hover:bg-surface-overlay/50 transition-colors"
+            >
+              <div className="flex items-center gap-2 mb-0.5">
+                <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${kindColor(e.kind)}`}>{e.kind}</span>
+                <span className="text-sm font-medium text-foreground truncate">{e.name}</span>
+              </div>
+              {e.path && <p className="text-xs text-foreground-muted font-mono truncate">{e.path}</p>}
+              {e.summary && <p className="text-xs text-foreground-secondary mt-0.5 line-clamp-1">{e.summary}</p>}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {total > limit && (
+        <div className="flex items-center justify-between">
+          <button
+            onClick={() => setOffset(Math.max(0, offset - limit))}
+            disabled={offset === 0}
+            className="text-xs text-accent hover:underline disabled:opacity-50 disabled:no-underline"
+          >
+            Previous
+          </button>
+          <span className="text-xs text-foreground-muted">
+            {offset + 1}–{Math.min(offset + limit, total)} of {total}
+          </span>
+          <button
+            onClick={() => setOffset(offset + limit)}
+            disabled={offset + limit >= total}
+            className="text-xs text-accent hover:underline disabled:opacity-50 disabled:no-underline"
+          >
+            Next
+          </button>
+        </div>
+      )}
     </div>
   );
 }
