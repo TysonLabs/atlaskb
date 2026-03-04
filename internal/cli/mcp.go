@@ -11,8 +11,8 @@ import (
 
 var mcpCmd = &cobra.Command{
 	Use:   "mcp",
-	Short: "Start the MCP server for Claude Code integration",
-	Long:  "Runs an MCP (Model Context Protocol) server over stdio, exposing AtlasKB tools to Claude Code and other MCP clients.",
+	Short: "Start MCP server over stdio (legacy mode)",
+	Long:  "Runs MCP over stdio for clients that require stdio transport. For combined runtime, use `atlaskb` or `atlaskb serve` and connect to /mcp over HTTP.",
 	RunE:  runMCP,
 }
 

@@ -24,8 +24,9 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "atlaskb",
-	Short: "AtlasKB — a knowledge base built from your codebase",
-	Long:  "AtlasKB indexes repositories via multi-phase LLM extraction and stores knowledge in a Postgres+pgvector graph for natural language querying.",
+	Short: "AtlasKB runtime and CLI for code knowledge",
+	Long:  "By default, runs the AtlasKB runtime (web dashboard + MCP over HTTP). Also provides indexing and management subcommands.",
+	RunE:  runServe,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip DB connection for commands that don't need runtime services.
 		if skipDBConnection(cmd) {

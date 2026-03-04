@@ -104,6 +104,22 @@ AtlasKB can be installed on macOS through a private Homebrew tap.
 
 End-to-end setup and release steps are documented in [docs/homebrew-private-tap.md](docs/homebrew-private-tap.md).
 
+## Running AtlasKB
+
+Start the combined runtime (dashboard + MCP HTTP endpoint):
+
+```bash
+atlaskb
+```
+
+This serves:
+- Dashboard: `http://localhost:3000`
+- MCP endpoint: `http://localhost:3000/mcp`
+
+`atlaskb serve` is equivalent.
+
+`atlaskb mcp` remains available for stdio-only MCP clients.
+
 ## License
 
 TBD

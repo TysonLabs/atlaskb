@@ -15,8 +15,8 @@ var servePort int
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Start the web dashboard",
-	Long:  "Start the AtlasKB web dashboard for browsing repos, entities, facts, and asking questions.",
+	Short: "Start the AtlasKB runtime",
+	Long:  "Start the AtlasKB runtime: web dashboard plus MCP over HTTP at /mcp.",
 	RunE:  runServe,
 }
 
@@ -40,5 +40,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	addr := fmt.Sprintf(":%d", port)
 	fmt.Printf("AtlasKB dashboard running at http://localhost%s\n", addr)
+	fmt.Printf("AtlasKB MCP endpoint running at http://localhost%s/mcp\n", addr)
 	return http.ListenAndServe(addr, srv)
 }
