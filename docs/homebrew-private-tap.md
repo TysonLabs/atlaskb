@@ -30,7 +30,7 @@ From this repo:
 chmod +x scripts/generate-homebrew-formula.sh
 scripts/generate-homebrew-formula.sh \
   --tag v0.1.0 \
-  --source-repo ssh://git@github.com/<owner>/atlaskb.git \
+  --source-repo https://github.com/<owner>/atlaskb.git \
   --output ../homebrew-atlaskb/Formula/atlaskb.rb
 ```
 
@@ -46,7 +46,7 @@ git push
 ## 4. Install from the private tap
 
 ```bash
-brew tap <owner>/atlaskb ssh://git@github.com/<owner>/homebrew-atlaskb.git
+brew tap <owner>/atlaskb https://github.com/<owner>/homebrew-atlaskb.git
 brew install <owner>/atlaskb/atlaskb
 atlaskb version
 ```
@@ -73,7 +73,7 @@ Configure these repository settings in `tgeorge06/atlaskb`:
 - Optional variable: `HOMEBREW_TAP_REPO`
   - Default is `<owner>/homebrew-atlaskb`.
 - Optional variable: `HOMEBREW_SOURCE_REPO`
-  - Default is `ssh://git@github.com/<owner>/<repo>.git`.
+  - Default is `https://github.com/<owner>/<repo>.git`.
 
 Once configured, a new tag is enough:
 
@@ -87,5 +87,5 @@ The workflow will regenerate `Formula/atlaskb.rb` and push it to the tap repo `m
 ## Notes
 
 - The generated formula defaults to the current repo's `origin` remote if `--source-repo` is not provided.
-- For private source repos, use `ssh://git@github.com/...` URLs so Homebrew can fetch with your SSH credentials.
+- For private source repos, use `https://github.com/...` URLs and ensure your Git credentials are configured for private repo access.
 - `atlaskb version` is build-injected through ldflags; Homebrew test validates the installed version.

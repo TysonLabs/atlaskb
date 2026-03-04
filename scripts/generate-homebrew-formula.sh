@@ -19,8 +19,8 @@ Options:
   -h, --help                Show this help text
 
 Notes:
-  - For private GitHub repos, prefer an SSH URL such as:
-      ssh://git@github.com/<owner>/<repo>.git
+  - For private GitHub repos, use an HTTPS URL such as:
+      https://github.com/<owner>/<repo>.git
   - The generated formula builds from source with Homebrew's Go toolchain.
 EOF
 }
@@ -29,7 +29,7 @@ normalize_repo_url() {
 	local url="$1"
 
 	if [[ "$url" =~ ^git@github\.com:(.+)$ ]]; then
-		printf 'ssh://git@github.com/%s\n' "${BASH_REMATCH[1]}"
+		printf 'https://github.com/%s\n' "${BASH_REMATCH[1]}"
 		return 0
 	fi
 
