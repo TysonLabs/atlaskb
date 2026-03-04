@@ -127,8 +127,11 @@ class Atlaskb < Formula
   version "${VERSION}"
 
   depends_on "go" => :build
+  depends_on "node" => :build
 
   def install
+    system "npm", "ci", "--prefix", "web"
+    system "npm", "run", "build", "--prefix", "web"
     ldflags = "-s -w -X github.com/tgeorge06/atlaskb/internal/version.Version=#{version}"
     system "go", "build", *std_go_args(ldflags: ldflags), "./cmd/atlaskb"
   end

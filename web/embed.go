@@ -15,10 +15,18 @@ func DistFS() fs.FS {
 	if err != nil {
 		return nil
 	}
-	// Check if it has any files
+	// Check if it has any real files (ignore placeholder files used for source builds).
 	entries, err := fs.ReadDir(sub, ".")
-	if err != nil || len(entries) == 0 {
+	if err != nil {
 		return nil
 	}
-	return sub
+	for _, e := range entries {
+		if e.Name() != ".gitkeep" {
+			return sub
+		}
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	return nil
 }
