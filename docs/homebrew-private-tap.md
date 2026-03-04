@@ -53,6 +53,20 @@ atlaskb version
 
 The formula builds AtlasKB from source at install time, pinned to the tag + commit revision.
 
+### Run AtlasKB as a background service
+
+```bash
+atlaskb setup
+brew services start atlaskb
+brew services list | grep atlaskb
+```
+
+Stop it with:
+
+```bash
+brew services stop atlaskb
+```
+
 ## 5. Publish updates
 
 For each new release:
