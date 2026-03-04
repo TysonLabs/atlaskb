@@ -4,7 +4,6 @@ import {
   FolderGit2,
   Boxes,
   MessageSquare,
-  Network,
   Workflow,
 } from "lucide-react";
 
@@ -14,7 +13,6 @@ const navItems = [
   { to: "/indexing", icon: Workflow, label: "Indexing" },
   { to: "/entities", icon: Boxes, label: "Entities" },
   { to: "/ask", icon: MessageSquare, label: "Ask" },
-  { to: "/graph", icon: Network, label: "Graph" },
 ];
 
 export function AppShell() {

@@ -61,7 +61,9 @@ type batchState struct {
 }
 
 type reindexRequest struct {
-	Force bool `json:"force"`
+	Force       bool     `json:"force"`
+	Phases      []string `json:"phases,omitempty"`
+	Concurrency int      `json:"concurrency,omitempty"`
 }
 
 func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
@@ -130,10 +132,15 @@ func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
 			ghClient = ghpkg.NewClient(s.cfg.GitHub)
 		}
 
+		concurrency := s.cfg.Pipeline.Concurrency
+		if req.Concurrency > 0 {
+			concurrency = req.Concurrency
+		}
+
 		result, err := pipeline.Orchestrate(ctx, pipeline.OrchestratorConfig{
 			RepoPath:          repo.LocalPath,
 			Force:             force,
-			Concurrency:       s.cfg.Pipeline.Concurrency,
+			Concurrency:       concurrency,
 			ExtractionModel:   s.cfg.Pipeline.ExtractionModel,
 			SynthesisModel:    s.cfg.Pipeline.SynthesisModel,
 			Pool:              s.pool,
@@ -141,6 +148,7 @@ func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
 			Embedder:          s.embedder,
 			Verbose:           false,
 			GitLogLimit:       s.cfg.Pipeline.GitLogLimit,
+			Phases:            req.Phases,
 			ProgressFunc:      job.appendLog,
 			GlobalExcludeDirs: s.cfg.Pipeline.GlobalExcludeDirs,
 			GitHubClient:      ghClient,

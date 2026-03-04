@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../../api/client";
 import type { RepoDetail as RepoDetailType, IndexingRun, Decision, FunctionalCluster, ExecutionFlow } from "../../types";
-import { ArrowLeft, X, AlertTriangle, Trash2, RefreshCw, Loader2 } from "lucide-react";
+import { ArrowLeft, X, AlertTriangle, Trash2, RefreshCw, Loader2, Settings2 } from "lucide-react";
 import { EntityDrawer } from "./EntityDrawer";
 import { ClustersTab } from "./ClustersTab";
 import { FlowsTab } from "./FlowsTab";
@@ -88,11 +88,14 @@ export function RepoDetail() {
     };
   }, [indexing.status, id, refreshData]);
 
-  const handleReindex = async (force?: boolean) => {
+  const [showReindexDialog, setShowReindexDialog] = useState(false);
+
+  const handleReindex = async (opts?: { force?: boolean; phases?: string[]; concurrency?: number }) => {
     if (!id) return;
     try {
-      await api.reindexRepo(id, force);
+      await api.reindexRepo(id, opts);
       setIndexing({ status: "running", logs: ["Starting indexing..."] });
+      setShowReindexDialog(false);
     } catch (err: any) {
       if (err.message.includes("already in progress")) {
         setIndexing({ status: "running", logs: ["Indexing already in progress..."] });
@@ -126,20 +129,29 @@ export function RepoDetail() {
           <p className="text-sm text-foreground-secondary font-mono">{repo.local_path}</p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => handleReindex(false)}
-            disabled={isRunning}
-            className="flex items-center gap-1.5 text-sm px-3 py-1.5 bg-syn-green/15 text-syn-green font-medium rounded-md hover:bg-syn-green/25 disabled:opacity-50 transition-colors"
-          >
-            {isRunning ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-            {isRunning ? "Indexing..." : "Re-index"}
-          </button>
+          <div className="relative">
+            <button
+              onClick={() => setShowReindexDialog(!showReindexDialog)}
+              disabled={isRunning}
+              className="flex items-center gap-1.5 text-sm px-3 py-1.5 bg-syn-green/15 text-syn-green font-medium rounded-md hover:bg-syn-green/25 disabled:opacity-50 transition-colors"
+            >
+              {isRunning ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              {isRunning ? "Indexing..." : "Re-index"}
+              {!isRunning && <Settings2 size={12} className="ml-0.5 opacity-60" />}
+            </button>
+            {showReindexDialog && !isRunning && (
+              <ReindexDialog
+                onRun={handleReindex}
+                onClose={() => setShowReindexDialog(false)}
+              />
+            )}
+          </div>
         </div>
       </div>
 
       {/* Indexing progress banner */}
       {indexing.status !== "idle" && (
-        <IndexingBanner status={indexing.status} logs={indexing.logs} onForceReindex={() => handleReindex(true)} />
+        <IndexingBanner status={indexing.status} logs={indexing.logs} onForceReindex={() => handleReindex({ force: true })} />
       )}
 
       <div className="grid grid-cols-4 gap-4 mb-6">
@@ -307,7 +319,7 @@ export function RepoDetail() {
           repo={repo}
           onUpdated={(updated) => setRepo({ ...repo, ...updated })}
           onDeleted={() => navigate("/repos")}
-          onReindex={() => handleReindex(true)}
+          onReindex={() => handleReindex({ force: true })}
           isIndexing={isRunning}
         />
       )}
@@ -318,6 +330,125 @@ export function RepoDetail() {
         onEntityClick={setDrawerEntityId}
       />
     </div>
+  );
+}
+
+const ALL_PHASES = [
+  { value: "phase1", label: "Phase 1 — Structural parsing" },
+  { value: "phase1.5", label: "Phase 1.5 — Tree-sitter extraction" },
+  { value: "phase1.7", label: "Phase 1.7 — Community detection" },
+  { value: "phase2", label: "Phase 2 — LLM file analysis" },
+  { value: "backfill", label: "Backfill — Missing entities" },
+  { value: "flows", label: "Flows — Execution flow detection" },
+  { value: "gitlog", label: "Git log — Commit history" },
+  { value: "phase3", label: "Phase 3 — GitHub PR mining" },
+  { value: "phase4", label: "Phase 4 — Synthesis" },
+  { value: "phase5", label: "Phase 5 — Repo summary" },
+  { value: "phase6", label: "Phase 6 — Confidence scoring" },
+  { value: "embedding", label: "Embedding — Vector generation" },
+];
+
+function ReindexDialog({
+  onRun,
+  onClose,
+}: {
+  onRun: (opts: { force?: boolean; phases?: string[]; concurrency?: number }) => void;
+  onClose: () => void;
+}) {
+  const [force, setForce] = useState(false);
+  const [selectedPhases, setSelectedPhases] = useState<string[]>([]);
+  const [concurrency, setConcurrency] = useState<number>(0);
+
+  const togglePhase = (phase: string) => {
+    setSelectedPhases((prev) =>
+      prev.includes(phase) ? prev.filter((p) => p !== phase) : [...prev, phase]
+    );
+  };
+
+  const handleRun = () => {
+    onRun({
+      force,
+      phases: selectedPhases.length > 0 ? selectedPhases : undefined,
+      concurrency: concurrency > 0 ? concurrency : undefined,
+    });
+  };
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      {/* Popover */}
+      <div className="absolute right-0 top-full mt-2 w-80 bg-surface-elevated border border-edge rounded-lg shadow-2xl z-50 p-4 space-y-4">
+        <h3 className="text-sm font-semibold text-foreground">Re-index Configuration</h3>
+
+        {/* Force toggle */}
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={force}
+            onChange={(e) => setForce(e.target.checked)}
+            className="rounded border-edge accent-accent"
+          />
+          <span className="text-sm text-foreground">Force re-index</span>
+          <span className="text-xs text-foreground-muted">(re-analyze all files)</span>
+        </label>
+
+        {/* Concurrency */}
+        <div>
+          <label className="block text-xs text-foreground-secondary mb-1">Concurrency</label>
+          <input
+            type="number"
+            min={0}
+            max={32}
+            value={concurrency || ""}
+            onChange={(e) => setConcurrency(parseInt(e.target.value) || 0)}
+            placeholder="Default"
+            className="w-24 border border-edge rounded px-2 py-1 text-sm bg-surface text-foreground placeholder-foreground-muted focus:outline-none focus:ring-1 focus:ring-accent"
+          />
+          <p className="text-xs text-foreground-muted mt-0.5">0 = use config default</p>
+        </div>
+
+        {/* Phase selection */}
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-xs text-foreground-secondary">Phases</label>
+            <span className="text-xs text-foreground-muted">
+              {selectedPhases.length === 0 ? "All phases" : `${selectedPhases.length} selected`}
+            </span>
+          </div>
+          <div className="max-h-48 overflow-y-auto space-y-1 border border-edge rounded p-2 bg-surface">
+            {ALL_PHASES.map((p) => (
+              <label key={p.value} className="flex items-center gap-2 cursor-pointer py-0.5">
+                <input
+                  type="checkbox"
+                  checked={selectedPhases.includes(p.value)}
+                  onChange={() => togglePhase(p.value)}
+                  className="rounded border-edge accent-accent"
+                />
+                <span className="text-xs text-foreground">{p.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center justify-between pt-1">
+          <button
+            onClick={onClose}
+            className="text-xs text-foreground-muted hover:text-foreground transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleRun}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-syn-green text-surface font-medium rounded-md hover:bg-syn-green/80 transition-colors"
+          >
+            <RefreshCw size={14} />
+            Start Re-index
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
 

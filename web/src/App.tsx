@@ -7,7 +7,6 @@ import { EntityExplorerPage } from "./components/entities/EntityExplorerPage";
 import { EntityDetailPage } from "./components/entities/EntityDetail";
 import { AskPage } from "./components/ask/AskPage";
 import { IndexingPage } from "./components/indexing/IndexingPage";
-import { GraphPage } from "./components/graph/GraphPage";
 
 export default function App() {
   return (
@@ -22,7 +21,6 @@ export default function App() {
           <Route path="/entities/:id" element={<EntityDetailPage />} />
           <Route path="/ask" element={<AskPage />} />
           <Route path="/ask/:sessionId" element={<AskPage />} />
-          <Route path="/graph" element={<GraphPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

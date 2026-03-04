@@ -9,13 +9,11 @@ import type {
   Fact,
   Relationship,
   Decision,
-  GraphData,
   SearchResult,
   ChatSession,
   ChatSessionSummary,
   BatchStatus,
   IndexingJobSummary,
-  CrossRepoLink,
   FunctionalCluster,
   ExecutionFlow,
 } from "../types";
@@ -77,8 +75,12 @@ export const api = {
   updateRepo: (id: string, data: { name?: string; exclude_dirs?: string[] }) =>
     put<Repo & { reindex_required: boolean }>(`/repos/${id}`, data),
   deleteRepo: (id: string) => del<{ status: string }>(`/repos/${id}`),
-  reindexRepo: (id: string, force?: boolean) =>
-    post<{ status: string; message: string }>(`/repos/${id}/reindex`, { force: force || false }),
+  reindexRepo: (id: string, opts?: { force?: boolean; phases?: string[]; concurrency?: number }) =>
+    post<{ status: string; message: string }>(`/repos/${id}/reindex`, {
+      force: opts?.force || false,
+      ...(opts?.phases?.length ? { phases: opts.phases } : {}),
+      ...(opts?.concurrency ? { concurrency: opts.concurrency } : {}),
+    }),
   getReindexStatus: (id: string) =>
     get<{ status: string; logs: string[] }>(`/repos/${id}/reindex/status`),
   getRepoIndexingRuns: (id: string) => get<IndexingRun[]>(`/repos/${id}/indexing-runs`),
@@ -106,19 +108,6 @@ export const api = {
   getEntityFacts: (id: string) => get<Fact[]>(`/entities/${id}/facts`),
   getEntityRelationships: (id: string) => get<Relationship[]>(`/entities/${id}/relationships`),
   getEntityDecisions: (id: string) => get<Decision[]>(`/entities/${id}/decisions`),
-
-  getRepoGraph: (id: string, entityKinds?: string, relKinds?: string) => {
-    const sp = new URLSearchParams();
-    if (entityKinds) sp.set("entity_kinds", entityKinds);
-    if (relKinds) sp.set("rel_kinds", relKinds);
-    return get<GraphData>(`/graph/repo/${id}?${sp}`);
-  },
-
-  getEntityGraph: (id: string, depth?: number) => {
-    const sp = new URLSearchParams();
-    if (depth) sp.set("depth", String(depth));
-    return get<GraphData>(`/graph/entity/${id}?${sp}`);
-  },
 
   search: (q: string, repoId?: string) => {
     const sp = new URLSearchParams({ q });
@@ -181,27 +170,8 @@ export const api = {
     put<ChatSession>(`/chats/${id}`, data),
   deleteChat: (id: string) => del<{ status: string }>(`/chats/${id}`),
 
-  // Cross-repo links
-  getCrossRepoLinks: (repoId?: string) => {
-    const sp = new URLSearchParams();
-    if (repoId) sp.set("repo_id", repoId);
-    return get<CrossRepoLink[]>(`/cross-repo/links?${sp}`);
-  },
-  createCrossRepoLink: (data: {
-    from_entity_id: string;
-    to_entity_id: string;
-    kind: string;
-    strength?: string;
-    description?: string;
-  }) => post<CrossRepoLink>("/cross-repo/links", data),
-  deleteCrossRepoLink: (id: string) => del<{ status: string }>(`/cross-repo/links/${id}`),
-
   getFileContent: (repoId: string, path: string) =>
     get<{ path: string; content: string }>(`/file?repo_id=${repoId}&path=${encodeURIComponent(path)}`),
-
-  // Multi-repo graph
-  getMultiRepoGraph: (repoIds: string[]) =>
-    get<GraphData>(`/graph/multi?repo_ids=${repoIds.join(",")}`),
 
   chatMessage: async function* (
     chatId: string,

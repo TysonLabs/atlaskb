@@ -154,42 +154,6 @@ export interface EntityDetail extends Entity {
   relationships: Relationship[];
 }
 
-export interface GraphNode {
-  id: string;
-  name: string;
-  kind: string;
-  path?: string;
-  repoId?: string;
-  repoName?: string;
-}
-
-export interface GraphEdge {
-  id: string;
-  source: string;
-  target: string;
-  kind: string;
-  strength: string;
-  description?: string;
-  crossRepo?: boolean;
-}
-
-export interface CrossRepoLink {
-  id: string;
-  from_entity_id: string;
-  to_entity_id: string;
-  from_repo_id: string;
-  to_repo_id: string;
-  kind: string;
-  strength: string;
-  description?: string;
-  provenance: Provenance[];
-  created_at: string;
-}
-
-export interface GraphData {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-}
 
 export interface EntitySearchResult {
   items: Entity[];
