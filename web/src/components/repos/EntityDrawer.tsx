@@ -291,6 +291,20 @@ export function EntityDrawer({ entityId, onClose, onEntityClick }: Props) {
               </div>
             )}
 
+            {/* Assumptions */}
+            {entity.assumptions && entity.assumptions.length > 0 && (
+              <div>
+                <h4 className="text-xs font-semibold text-foreground-secondary mb-1">Assumptions</h4>
+                <ul className="space-y-0.5">
+                  {entity.assumptions.map((a, i) => (
+                    <li key={i} className="text-sm text-foreground-secondary flex items-start gap-1.5">
+                      <span className="text-syn-yellow mt-0.5">-</span> {a}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {/* Facts by category */}
             {Object.keys(factsByCategory).length > 0 && (
               <div>
@@ -300,9 +314,26 @@ export function EntityDrawer({ entityId, onClose, onEntityClick }: Props) {
                     <p className="text-xs font-medium text-foreground-muted uppercase tracking-wide mb-1">{cat}</p>
                     <div className="space-y-1">
                       {catFacts.map((f) => (
-                        <div key={f.id} className="text-sm text-foreground-secondary bg-surface rounded px-2 py-1.5">
-                          {f.claim}
+                        <div key={f.id} className={`text-sm text-foreground-secondary bg-surface rounded px-2 py-1.5${f.superseded_by ? " opacity-60" : ""}`}>
+                          <span className={f.superseded_by ? "line-through" : ""}>{f.claim}</span>
                           <span className="text-xs text-foreground-muted ml-1">({f.confidence})</span>
+                          {f.superseded_by && (
+                            <span className="text-[10px] font-medium text-syn-yellow bg-syn-yellow/15 px-1 py-0.5 rounded ml-1.5">outdated</span>
+                          )}
+                          {f.provenance && f.provenance.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mt-1">
+                              {f.provenance.map((p, i) => (
+                                <span key={i} className="inline-flex items-center gap-0.5">
+                                  <span className="bg-surface-overlay text-foreground-muted px-1 py-0.5 rounded text-[10px] font-medium">{p.source_type}</span>
+                                  {p.url ? (
+                                    <a href={p.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-accent hover:underline">{p.ref}</a>
+                                  ) : (
+                                    <span className="text-[10px] text-foreground-muted">{p.ref}</span>
+                                  )}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -320,18 +351,29 @@ export function EntityDrawer({ entityId, onClose, onEntityClick }: Props) {
                     const isOutgoing = r.from_entity_id === entity.id;
                     const otherName = isOutgoing ? r.to_entity_name : r.from_entity_name;
                     const otherId = isOutgoing ? r.to_entity_id : r.from_entity_id;
+                    const strengthDot = r.strength === "strong"
+                      ? "bg-syn-green"
+                      : r.strength === "moderate"
+                        ? "bg-syn-yellow"
+                        : "bg-foreground-muted";
                     return (
-                      <div key={r.id} className="flex items-center gap-1.5 text-sm">
-                        <span className="text-foreground-muted text-xs w-20 text-right shrink-0">
-                          {isOutgoing ? r.kind : `${r.kind} by`}
-                        </span>
-                        <span className="text-foreground-muted">{isOutgoing ? "\u2192" : "\u2190"}</span>
-                        <button
-                          onClick={() => onEntityClick?.(otherId)}
-                          className="text-accent hover:underline truncate text-left"
-                        >
-                          {otherName || otherId.slice(0, 8)}
-                        </button>
+                      <div key={r.id} className="space-y-0.5">
+                        <div className="flex items-center gap-1.5 text-sm">
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${strengthDot}`} title={`Strength: ${r.strength}`} />
+                          <span className="text-foreground-muted text-xs w-20 text-right shrink-0">
+                            {isOutgoing ? r.kind : `${r.kind} by`}
+                          </span>
+                          <span className="text-foreground-muted">{isOutgoing ? "\u2192" : "\u2190"}</span>
+                          <button
+                            onClick={() => onEntityClick?.(otherId)}
+                            className="text-accent hover:underline truncate text-left"
+                          >
+                            {otherName || otherId.slice(0, 8)}
+                          </button>
+                        </div>
+                        {r.description && (
+                          <p className="text-xs text-foreground-muted ml-5 pl-20">{r.description}</p>
+                        )}
                       </div>
                     );
                   })}

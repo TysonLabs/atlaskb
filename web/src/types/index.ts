@@ -126,6 +126,11 @@ export interface IndexingRun {
   quality_rel_connect?: number;
   quality_dim_coverage?: number;
   quality_parse_rate?: number;
+  total_tokens?: number;
+  total_cost_usd?: number;
+  orphan_entities?: number;
+  backfill_facts?: number;
+  backfill_rels?: number;
   duration_ms?: number;
   started_at: string;
   completed_at?: string;

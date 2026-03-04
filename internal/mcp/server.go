@@ -80,6 +80,11 @@ func RegisterTools(srv *gomcp.Server, pool *pgxpool.Pool, embedder embeddings.Cl
 		Name:        "get_functional_clusters",
 		Description: "Get functional clusters (community detection) for a repository. Returns groups of code entities that form cohesive functional areas based on their call/dependency relationships.",
 	}, s.handleGetFunctionalClusters)
+
+	gomcp.AddTool(srv, &gomcp.Tool{
+		Name:        "get_repo_overview",
+		Description: "Get a high-level overview of a repository including its Phase 5 summary and basic stats (entity, fact, relationship, and decision counts). Useful for agents to quickly understand what a repo contains.",
+	}, s.handleGetRepoOverview)
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -245,18 +250,23 @@ type getFunctionalClustersInput struct {
 	MaxResults int    `json:"max_results,omitempty" jsonschema:"Max results to return (default 50, max 200)"`
 }
 
+type getRepoOverviewInput struct {
+	Repo string `json:"repo" jsonschema:"Repository name (required)"`
+}
+
 // ── Response types ───────────────────────────────────────────────────────────
 
 type searchResultItem struct {
-	Entity     string  `json:"entity"`
-	EntityKind string  `json:"entity_kind"`
-	Path       string  `json:"path,omitempty"`
-	Repo       string  `json:"repo,omitempty"`
-	Claim      string  `json:"claim"`
-	Dimension  string  `json:"dimension"`
-	Category   string  `json:"category"`
-	Confidence string  `json:"confidence"`
-	Score      float64 `json:"score"`
+	Entity     string             `json:"entity"`
+	EntityKind string             `json:"entity_kind"`
+	Path       string             `json:"path,omitempty"`
+	Repo       string             `json:"repo,omitempty"`
+	Claim      string             `json:"claim"`
+	Dimension  string             `json:"dimension"`
+	Category   string             `json:"category"`
+	Confidence string             `json:"confidence"`
+	Score      float64            `json:"score"`
+	Provenance []models.Provenance `json:"provenance,omitempty"`
 }
 
 type tripletResultItem struct {
@@ -416,6 +426,16 @@ type taskContextResponse struct {
 	Staleness   stalenessInfo       `json:"staleness"`
 }
 
+type repoOverviewResponse struct {
+	Name              string     `json:"name"`
+	Overview          string     `json:"overview"`
+	EntityCount       int        `json:"entity_count"`
+	FactCount         int        `json:"fact_count"`
+	RelationshipCount int        `json:"relationship_count"`
+	DecisionCount     int        `json:"decision_count"`
+	LastIndexedAt     *time.Time `json:"last_indexed_at,omitempty"`
+}
+
 // ── Existing handlers ────────────────────────────────────────────────────────
 
 func (s *Server) handleSearch(ctx context.Context, req *gomcp.CallToolRequest, args searchInput) (*gomcp.CallToolResult, any, error) {
@@ -511,6 +531,7 @@ func (s *Server) handleSearch(ctx context.Context, req *gomcp.CallToolRequest, a
 			Category:   r.Fact.Category,
 			Confidence: r.Fact.Confidence,
 			Score:      r.Score,
+			Provenance: r.Fact.Provenance,
 		})
 	}
 
@@ -1570,6 +1591,63 @@ func (s *Server) handleGetFunctionalClusters(ctx context.Context, req *gomcp.Cal
 	}
 
 	return jsonResult(functionalClustersResponse{Clusters: items}), nil, nil
+}
+
+// ── Repo Overview ────────────────────────────────────────────────────────────
+
+func (s *Server) handleGetRepoOverview(ctx context.Context, req *gomcp.CallToolRequest, args getRepoOverviewInput) (*gomcp.CallToolResult, any, error) {
+	if args.Repo == "" {
+		return errorResult("repo parameter is required"), nil, nil
+	}
+
+	repo, err := s.resolveRepo(ctx, args.Repo)
+	if err != nil {
+		return errorResult(err.Error()), nil, nil
+	}
+
+	overview := ""
+	if repo.Overview != nil {
+		overview = *repo.Overview
+	}
+
+	// Query counts for entities, facts, relationships, decisions
+	var entityCount, factCount, relCount, decisionCount int
+
+	err = s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM entities WHERE repo_id = $1`, repo.ID).Scan(&entityCount)
+	if err != nil {
+		return errorResult(fmt.Sprintf("counting entities: %v", err)), nil, nil
+	}
+
+	err = s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM facts WHERE repo_id = $1`, repo.ID).Scan(&factCount)
+	if err != nil {
+		return errorResult(fmt.Sprintf("counting facts: %v", err)), nil, nil
+	}
+
+	err = s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM relationships WHERE repo_id = $1`, repo.ID).Scan(&relCount)
+	if err != nil {
+		return errorResult(fmt.Sprintf("counting relationships: %v", err)), nil, nil
+	}
+
+	err = s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM decisions WHERE repo_id = $1`, repo.ID).Scan(&decisionCount)
+	if err != nil {
+		return errorResult(fmt.Sprintf("counting decisions: %v", err)), nil, nil
+	}
+
+	resp := repoOverviewResponse{
+		Name:              repo.Name,
+		Overview:          overview,
+		EntityCount:       entityCount,
+		FactCount:         factCount,
+		RelationshipCount: relCount,
+		DecisionCount:     decisionCount,
+		LastIndexedAt:     repo.LastIndexedAt,
+	}
+
+	return jsonResult(resp), nil, nil
 }
 
 func jsonResult(v any) *gomcp.CallToolResult {

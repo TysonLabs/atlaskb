@@ -56,6 +56,19 @@ export function EntityDetailPage() {
         </div>
       )}
 
+      {entity.assumptions && entity.assumptions.length > 0 && (
+        <div className="mb-4">
+          <h3 className="text-xs font-semibold text-foreground-secondary mb-1">Assumptions</h3>
+          <ul className="space-y-0.5">
+            {entity.assumptions.map((a, i) => (
+              <li key={i} className="text-sm text-foreground-secondary flex items-start gap-1.5">
+                <span className="text-syn-yellow mt-0.5">-</span> {a}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="border-b border-edge mb-4">
         <div className="flex gap-4">
@@ -83,13 +96,30 @@ export function EntityDetailPage() {
             <p className="text-sm text-foreground-secondary">No facts.</p>
           ) : (
             entity.facts.map((fact) => (
-              <div key={fact.id} className="bg-surface-elevated rounded-lg border border-edge p-3">
-                <p className="text-sm text-foreground">{fact.claim}</p>
+              <div key={fact.id} className={`bg-surface-elevated rounded-lg border border-edge p-3${fact.superseded_by ? " opacity-60" : ""}`}>
+                <p className={`text-sm text-foreground${fact.superseded_by ? " line-through" : ""}`}>{fact.claim}</p>
+                {fact.superseded_by && (
+                  <span className="text-[10px] font-medium text-syn-yellow bg-syn-yellow/15 px-1 py-0.5 rounded">outdated</span>
+                )}
                 <div className="flex gap-2 mt-2">
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-overlay text-foreground-secondary">{fact.dimension}</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-overlay text-foreground-secondary">{fact.category}</span>
                   <span className={`text-[10px] px-1.5 py-0.5 rounded ${confidenceColor(fact.confidence)}`}>{fact.confidence}</span>
                 </div>
+                {fact.provenance && fact.provenance.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {fact.provenance.map((p, i) => (
+                      <span key={i} className="inline-flex items-center gap-0.5">
+                        <span className="bg-surface-overlay text-foreground-muted px-1 py-0.5 rounded text-[10px] font-medium">{p.source_type}</span>
+                        {p.url ? (
+                          <a href={p.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-accent hover:underline">{p.ref}</a>
+                        ) : (
+                          <span className="text-[10px] text-foreground-muted">{p.ref}</span>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             ))
           )}
@@ -101,26 +131,34 @@ export function EntityDetailPage() {
           {entity.relationships.length === 0 ? (
             <p className="p-4 text-sm text-foreground-secondary">No relationships.</p>
           ) : (
-            entity.relationships.map((rel) => (
-              <div key={rel.id} className="px-4 py-3 text-sm">
-                <div className="flex items-center gap-2">
-                  <Link
-                    to={`/entities/${rel.from_entity_id}`}
-                    className="text-accent hover:underline font-medium"
-                  >
-                    {rel.from_entity_name || rel.from_entity_id.slice(0, 8)}
-                  </Link>
-                  <span className="px-2 py-0.5 bg-surface-overlay rounded text-xs font-mono text-foreground-secondary">{rel.kind}</span>
-                  <Link
-                    to={`/entities/${rel.to_entity_id}`}
-                    className="text-accent hover:underline font-medium"
-                  >
-                    {rel.to_entity_name || rel.to_entity_id.slice(0, 8)}
-                  </Link>
+            entity.relationships.map((rel) => {
+              const strengthDot = rel.strength === "strong"
+                ? "bg-syn-green"
+                : rel.strength === "moderate"
+                  ? "bg-syn-yellow"
+                  : "bg-foreground-muted";
+              return (
+                <div key={rel.id} className="px-4 py-3 text-sm">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${strengthDot}`} title={`Strength: ${rel.strength}`} />
+                    <Link
+                      to={`/entities/${rel.from_entity_id}`}
+                      className="text-accent hover:underline font-medium"
+                    >
+                      {rel.from_entity_name || rel.from_entity_id.slice(0, 8)}
+                    </Link>
+                    <span className="px-2 py-0.5 bg-surface-overlay rounded text-xs font-mono text-foreground-secondary">{rel.kind}</span>
+                    <Link
+                      to={`/entities/${rel.to_entity_id}`}
+                      className="text-accent hover:underline font-medium"
+                    >
+                      {rel.to_entity_name || rel.to_entity_id.slice(0, 8)}
+                    </Link>
+                  </div>
+                  {rel.description && <p className="text-xs text-foreground-secondary mt-1 ml-4">{rel.description}</p>}
                 </div>
-                {rel.description && <p className="text-xs text-foreground-secondary mt-1">{rel.description}</p>}
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       )}

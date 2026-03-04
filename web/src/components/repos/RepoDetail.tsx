@@ -179,6 +179,23 @@ export function RepoDetail() {
         </div>
       )}
 
+      {/* Facts by Dimension */}
+      {repo.fact_by_dimension && Object.keys(repo.fact_by_dimension).length > 0 && (
+        <div className="bg-surface-elevated rounded-lg border border-edge p-4 mb-6">
+          <h3 className="text-sm font-semibold text-foreground-secondary mb-2">Facts by Dimension</h3>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(repo.fact_by_dimension).sort((a, b) => b[1] - a[1]).map(([dimension, count]) => (
+              <span
+                key={dimension}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium ${dimensionColor(dimension)}`}
+              >
+                {dimension}: {count}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="border-b border-edge mb-4">
         <div className="flex gap-4 overflow-x-auto">
@@ -234,12 +251,24 @@ export function RepoDetail() {
                   <span className="font-medium text-foreground">{run.mode}</span>
                   <span className="text-foreground-muted">{new Date(run.started_at).toLocaleString()}</span>
                 </div>
-                <div className="flex gap-3 text-xs text-foreground-secondary">
+                <div className="flex gap-3 text-xs text-foreground-secondary flex-wrap">
+                  {run.model_extraction && (
+                    <span className="px-1.5 py-0.5 rounded bg-surface-overlay text-foreground-muted font-mono">{run.model_extraction}</span>
+                  )}
                   {run.files_analyzed != null && <span>{run.files_analyzed} files</span>}
                   {run.entities_created != null && <span>{run.entities_created} entities</span>}
                   {run.facts_created != null && <span>{run.facts_created} facts</span>}
                   {run.duration_ms != null && <span>{(run.duration_ms / 1000).toFixed(1)}s</span>}
                   {run.quality_overall != null && <span>Quality: {Math.round(run.quality_overall)}%</span>}
+                  {run.total_tokens != null && (
+                    <span>
+                      {run.total_tokens.toLocaleString()} tokens
+                      {run.total_cost_usd != null && ` (~$${run.total_cost_usd.toFixed(2)})`}
+                    </span>
+                  )}
+                  {run.orphan_entities != null && run.orphan_entities > 0 && <span>{run.orphan_entities} orphans</span>}
+                  {run.backfill_facts != null && run.backfill_facts > 0 && <span>{run.backfill_facts} backfill facts</span>}
+                  {run.backfill_rels != null && run.backfill_rels > 0 && <span>{run.backfill_rels} backfill rels</span>}
                 </div>
               </div>
             ))
@@ -730,6 +759,16 @@ function CountCard({ label, value }: { label: string; value: number }) {
       <p className="text-xs text-foreground-secondary">{label}</p>
     </div>
   );
+}
+
+function dimensionColor(dimension: string): string {
+  const map: Record<string, string> = {
+    what: "bg-syn-blue/15 text-syn-blue",
+    how: "bg-syn-green/15 text-syn-green",
+    why: "bg-syn-magenta/15 text-syn-magenta",
+    when: "bg-syn-orange/15 text-syn-orange",
+  };
+  return map[dimension] || "bg-surface-overlay text-foreground-secondary";
 }
 
 function kindColor(kind: string): string {
