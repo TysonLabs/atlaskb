@@ -19,11 +19,16 @@ import (
 )
 
 type SearchResult struct {
-	Fact     models.Fact   `json:"fact"`
-	Entity   models.Entity `json:"entity"`
-	RepoName string        `json:"repo_name"`
-	Score    float64       `json:"score"`
-	Source   string        `json:"source"` // "vector", "keyword", "expansion", "relationship"
+	Fact            models.Fact   `json:"fact"`
+	Entity          models.Entity `json:"entity"`
+	RepoName        string        `json:"repo_name"`
+	Score           float64       `json:"score"`
+	Source          string        `json:"source"` // "vector", "keyword", "expansion", "relationship"
+	Stale           bool          `json:"stale"`
+	StaleReasons    []string      `json:"stale_reasons,omitempty"`
+	CommitsBehind   *int          `json:"commits_behind,omitempty"`
+	Flagged         bool          `json:"flagged"`
+	PendingFeedback int           `json:"pending_feedback,omitempty"`
 }
 
 type Engine struct {
@@ -37,20 +42,20 @@ type Engine struct {
 
 // scoreTrace tracks how a single result's score was built up.
 type scoreTrace struct {
-	factID       uuid.UUID
-	entityName   string
-	base         float64
-	source       string
-	rrfVectorRank int // 1-based rank in vector list (0 if absent)
-	rrfFTSRank    int // 1-based rank in FTS list (0 if absent)
-	entityBoost  float64 // multiplier from entity-name mention (1.0 if none)
-	entitySim    float64 // similarity that drove the boost
-	confidence   float64 // multiplier
-	kindBias     float64 // multiplier
-	category     float64 // multiplier
-	repoAffinity float64 // multiplier for same-repo boost (1.0 if no repo filter)
-	overlap      float64 // additive bonus
-	final        float64
+	factID        uuid.UUID
+	entityName    string
+	base          float64
+	source        string
+	rrfVectorRank int     // 1-based rank in vector list (0 if absent)
+	rrfFTSRank    int     // 1-based rank in FTS list (0 if absent)
+	entityBoost   float64 // multiplier from entity-name mention (1.0 if none)
+	entitySim     float64 // similarity that drove the boost
+	confidence    float64 // multiplier
+	kindBias      float64 // multiplier
+	category      float64 // multiplier
+	repoAffinity  float64 // multiplier for same-repo boost (1.0 if no repo filter)
+	overlap       float64 // additive bonus
+	final         float64
 }
 
 func (t scoreTrace) String() string {
@@ -113,6 +118,19 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 	repoStore := &models.RepoStore{Pool: e.Pool}
 	relStore := &models.RelationshipStore{Pool: e.Pool}
 	repoNameCache := make(map[uuid.UUID]string)
+	repoStaleCache := make(map[uuid.UUID]models.RepoStaleness)
+	lookupRepoStaleness := func(repoID uuid.UUID) models.RepoStaleness {
+		if cached, ok := repoStaleCache[repoID]; ok {
+			return cached
+		}
+		repo, err := repoStore.GetByID(ctx, repoID)
+		if err != nil || repo == nil {
+			return models.RepoStaleness{RepoID: repoID}
+		}
+		stale := models.ComputeRepoStaleness(ctx, *repo)
+		repoStaleCache[repoID] = stale
+		return stale
+	}
 
 	// Track seen fact IDs → index in allResults for dedup and cross-source fusion
 	seen := make(map[uuid.UUID]int)
@@ -185,6 +203,7 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 				continue
 			}
 			repoName := e.lookupRepoName(ctx, repoStore, repoNameCache, mr.Fact.RepoID)
+			staleness := lookupRepoStaleness(mr.Fact.RepoID)
 
 			// Determine source label
 			source := "vector"
@@ -196,11 +215,14 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 
 			seen[mr.Fact.ID] = len(allResults)
 			allResults = append(allResults, SearchResult{
-				Fact:     mr.Fact.Fact,
-				Entity:   *entity,
-				RepoName: repoName,
-				Score:    mr.RRFScore,
-				Source:   source,
+				Fact:          mr.Fact.Fact,
+				Entity:        *entity,
+				RepoName:      repoName,
+				Score:         mr.RRFScore,
+				Source:        source,
+				Stale:         staleness.Stale,
+				StaleReasons:  staleness.Reasons,
+				CommitsBehind: staleness.CommitsBehind,
 			})
 			if e.Verbose {
 				traces = append(traces, scoreTrace{
@@ -280,15 +302,19 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 					continue
 				}
 				repoName := e.lookupRepoName(ctx, repoStore, repoNameCache, sf.RepoID)
+				staleness := lookupRepoStaleness(sf.RepoID)
 				// Scale expansion score relative to top RRF score (0.85× discount)
 				score := topRRFScore * sf.Score * 0.85
 				seen[sf.ID] = len(allResults)
 				allResults = append(allResults, SearchResult{
-					Fact:     sf.Fact,
-					Entity:   *entity,
-					RepoName: repoName,
-					Score:    score,
-					Source:   "expansion",
+					Fact:          sf.Fact,
+					Entity:        *entity,
+					RepoName:      repoName,
+					Score:         score,
+					Source:        "expansion",
+					Stale:         staleness.Stale,
+					StaleReasons:  staleness.Reasons,
+					CommitsBehind: staleness.CommitsBehind,
 				})
 				if e.Verbose {
 					traces = append(traces, scoreTrace{
@@ -357,13 +383,17 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 				continue
 			}
 			repoName := e.lookupRepoName(ctx, repoStore, repoNameCache, f.RepoID)
+			staleness := lookupRepoStaleness(f.RepoID)
 			seen[f.ID] = len(allResults)
 			allResults = append(allResults, SearchResult{
-				Fact:     f,
-				Entity:   *entity,
-				RepoName: repoName,
-				Score:    score,
-				Source:   "relationship",
+				Fact:          f,
+				Entity:        *entity,
+				RepoName:      repoName,
+				Score:         score,
+				Source:        "relationship",
+				Stale:         staleness.Stale,
+				StaleReasons:  staleness.Reasons,
+				CommitsBehind: staleness.CommitsBehind,
 			})
 			if e.Verbose {
 				traces = append(traces, scoreTrace{
@@ -474,6 +504,20 @@ func (e *Engine) Search(ctx context.Context, question string, repoIDs []uuid.UUI
 	})
 	if len(allResults) > limit {
 		allResults = allResults[:limit]
+	}
+
+	feedbackStore := &models.FactFeedbackStore{Pool: e.Pool}
+	factIDs := make([]uuid.UUID, 0, len(allResults))
+	for _, r := range allResults {
+		factIDs = append(factIDs, r.Fact.ID)
+	}
+	if counts, err := feedbackStore.CountPendingByFactIDs(ctx, factIDs); err == nil {
+		for i := range allResults {
+			if n := counts[allResults[i].Fact.ID]; n > 0 {
+				allResults[i].Flagged = true
+				allResults[i].PendingFeedback = n
+			}
+		}
 	}
 
 	// Phase 5: Enforce repo diversity when not single-repo scoped

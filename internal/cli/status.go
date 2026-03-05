@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -22,11 +23,14 @@ func init() {
 }
 
 type repoStatus struct {
-	Name        string              `json:"name"`
-	Path        string              `json:"path"`
-	LastIndexed string              `json:"last_indexed,omitempty"`
-	JobCounts   map[string]int      `json:"job_counts"`
-	LastRun     *models.IndexingRun `json:"last_run,omitempty"`
+	Name          string              `json:"name"`
+	Path          string              `json:"path"`
+	LastIndexed   string              `json:"last_indexed,omitempty"`
+	JobCounts     map[string]int      `json:"job_counts"`
+	LastRun       *models.IndexingRun `json:"last_run,omitempty"`
+	Stale         bool                `json:"stale"`
+	StaleReasons  []string            `json:"stale_reasons,omitempty"`
+	CommitsBehind *int                `json:"commits_behind,omitempty"`
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
@@ -60,6 +64,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	var statuses []repoStatus
+	staleRepoCount := 0
+	revalidationBacklog := 0
 	for _, r := range repos {
 		counts, err := jobStore.CountByStatus(cmd.Context(), r.ID, "")
 		if err != nil {
@@ -78,6 +84,14 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		// Fetch last indexing run
 		lastRun, _ := runStore.GetLatest(cmd.Context(), r.ID)
 		s.LastRun = lastRun
+		staleness := models.ComputeRepoStaleness(cmd.Context(), r)
+		s.Stale = staleness.Stale
+		s.StaleReasons = staleness.Reasons
+		s.CommitsBehind = staleness.CommitsBehind
+		if staleness.Stale {
+			staleRepoCount++
+		}
+		revalidationBacklog += counts["pending"] + counts["failed"]
 
 		statuses = append(statuses, s)
 	}
@@ -92,6 +106,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	goodStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+
+	fmt.Println(headerStyle.Render(fmt.Sprintf("Stale repos: %d/%d  Revalidation backlog: %d", staleRepoCount, len(statuses), revalidationBacklog)))
+	fmt.Println()
 
 	for _, s := range statuses {
 		fmt.Println(headerStyle.Render(s.Name))
@@ -115,6 +132,16 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			fmt.Printf(", %d pending", c)
 		}
 		fmt.Println()
+
+		if s.Stale {
+			commitInfo := ""
+			if s.CommitsBehind != nil {
+				commitInfo = fmt.Sprintf(" (commits behind: %d)", *s.CommitsBehind)
+			}
+			fmt.Printf("  %s %s%s\n", warnStyle.Render("Stale:"), strings.Join(s.StaleReasons, ", "), commitInfo)
+		} else {
+			fmt.Printf("  %s fresh\n", goodStyle.Render("Stale:"))
+		}
 
 		// Show last run metrics
 		if s.LastRun != nil {
@@ -161,6 +188,21 @@ func runStatus(cmd *cobra.Command, args []string) error {
 				}
 				if r.RelsCreated != nil {
 					fmt.Printf(", %d rels", *r.RelsCreated)
+				}
+				fmt.Println()
+			}
+			if r.ParseFallbacks != nil || r.UnresolvedRefs != nil {
+				fmt.Printf("    Parse fallbacks: ")
+				if r.ParseFallbacks != nil {
+					fmt.Printf("%d", *r.ParseFallbacks)
+				} else {
+					fmt.Printf("0")
+				}
+				fmt.Printf("  Unresolved refs: ")
+				if r.UnresolvedRefs != nil {
+					fmt.Printf("%d", *r.UnresolvedRefs)
+				} else {
+					fmt.Printf("0")
 				}
 				fmt.Println()
 			}
