@@ -4,8 +4,8 @@ import "testing"
 
 func TestClassifyFile(t *testing.T) {
 	tests := []struct {
-		path     string
-		size     int64
+		path      string
+		size      int64
 		wantClass FileClass
 		wantLang  string
 	}{
@@ -55,6 +55,25 @@ func TestShouldAnalyze(t *testing.T) {
 		fi := FileInfo{Class: tt.class}
 		if got := ShouldAnalyze(fi); got != tt.want {
 			t.Errorf("ShouldAnalyze(%q) = %v, want %v", tt.class, got, tt.want)
+		}
+	}
+}
+
+func TestIsManifestFile(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{path: "go.mod", want: true},
+		{path: "service/package.json", want: true},
+		{path: "service/build.gradle.kts", want: true},
+		{path: "src/MyApp.csproj", want: true},
+		{path: "README.md", want: false},
+		{path: "internal/server/server.go", want: false},
+	}
+	for _, tt := range tests {
+		if got := IsManifestFile(tt.path); got != tt.want {
+			t.Errorf("IsManifestFile(%q) = %v, want %v", tt.path, got, tt.want)
 		}
 	}
 }

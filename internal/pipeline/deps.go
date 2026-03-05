@@ -153,6 +153,7 @@ func parsePackageJSON(path string) []Dependency {
 }
 
 var reqLineRe = regexp.MustCompile(`^([a-zA-Z0-9_-][a-zA-Z0-9._-]*)\s*(?:[=!<>~]+\s*(.+))?`)
+var pep621DepRe = regexp.MustCompile(`^([A-Za-z0-9._-]+)(?:\[[^\]]+\])?\s*(.*)$`)
 
 func parseRequirementsTxt(path string) []Dependency {
 	f, err := os.Open(path)
@@ -200,27 +201,43 @@ func parsePyprojectToml(path string) []Dependency {
 
 	// PEP 621 style
 	for _, dep := range pyproject.Project.Dependencies {
-		parts := strings.FieldsFunc(dep, func(r rune) bool {
-			return r == '>' || r == '<' || r == '=' || r == '!' || r == '~' || r == ';' || r == '[' || r == ' '
-		})
-		if len(parts) > 0 {
-			ver := ""
-			if len(parts) > 1 {
-				ver = parts[1]
+		spec := strings.TrimSpace(dep)
+		if spec == "" {
+			continue
+		}
+		// Strip markers (e.g. '; python_version >= "3.10"').
+		if idx := strings.Index(spec, ";"); idx >= 0 {
+			spec = strings.TrimSpace(spec[:idx])
+		}
+		m := pep621DepRe.FindStringSubmatch(spec)
+		if len(m) != 3 {
+			continue
+		}
+		name := strings.TrimSpace(m[1])
+		constraint := strings.TrimSpace(m[2])
+		version := ""
+		if constraint != "" {
+			token := strings.FieldsFunc(constraint, func(r rune) bool {
+				return r == ',' || r == ' '
+			})
+			if len(token) > 0 {
+				version = strings.TrimLeft(token[0], "<>=!~")
 			}
-			deps = append(deps, Dependency{Name: parts[0], Version: ver})
+		}
+		if name != "" {
+			deps = append(deps, Dependency{Name: name, Version: version})
 		}
 	}
 
 	// Poetry style
-	for name := range pyproject.Tool.Poetry.Dependencies {
+	for name, val := range pyproject.Tool.Poetry.Dependencies {
 		if name == "python" {
 			continue
 		}
-		deps = append(deps, Dependency{Name: name})
+		deps = append(deps, Dependency{Name: name, Version: extractVersion(val)})
 	}
-	for name := range pyproject.Tool.Poetry.DevDependencies {
-		deps = append(deps, Dependency{Name: name, Dev: true})
+	for name, val := range pyproject.Tool.Poetry.DevDependencies {
+		deps = append(deps, Dependency{Name: name, Version: extractVersion(val), Dev: true})
 	}
 
 	return deps
@@ -377,22 +394,30 @@ func parsePubspecYAML(path string) []Dependency {
 	lines := strings.Split(string(data), "\n")
 	inDeps := false
 	isDev := false
+	sectionIndent := 0
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
 		if trimmed == "dependencies:" {
 			inDeps = true
 			isDev = false
+			sectionIndent = indent
 			continue
 		}
 		if trimmed == "dev_dependencies:" {
 			inDeps = true
 			isDev = true
+			sectionIndent = indent
 			continue
 		}
 		// New top-level key
 		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
 			inDeps = false
+			continue
+		}
+		// Only parse direct children in the dependencies block.
+		if inDeps && indent != sectionIndent+2 {
 			continue
 		}
 		if inDeps && trimmed != "" && !strings.HasPrefix(trimmed, "#") {

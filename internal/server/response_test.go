@@ -6,6 +6,13 @@ import (
 	"testing"
 )
 
+func TestAPIErrorErrorMethod(t *testing.T) {
+	e := &APIError{Status: http.StatusBadRequest, Message: "bad input"}
+	if got := e.Error(); got != "bad input" {
+		t.Fatalf("APIError.Error() = %q, want %q", got, "bad input")
+	}
+}
+
 func TestWriteJSONWithETag_ReturnsNotModifiedWhenIfNoneMatchMatches(t *testing.T) {
 	req1 := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
 	rec1 := httptest.NewRecorder()

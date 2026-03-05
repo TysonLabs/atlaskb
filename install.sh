@@ -304,5 +304,9 @@ do_install
 ensure_path
 health_check
 
-printf "\n  atlaskb %s installed successfully!\n" "${VERSION}"
-printf "  Run ${CYAN}atlaskb setup${RESET} then ${CYAN}atlaskb${RESET} to get started.\n\n"
+if [ "$DRY_RUN" = true ]; then
+	printf "\n  Dry run complete for atlaskb %s.\n\n" "${VERSION}"
+else
+	printf "\n  atlaskb %s installed successfully!\n" "${VERSION}"
+	printf "  Run ${CYAN}atlaskb setup${RESET} then ${CYAN}atlaskb${RESET} to get started.\n\n"
+fi

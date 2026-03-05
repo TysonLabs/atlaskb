@@ -26,7 +26,8 @@ function Write-Err { param($Msg) Write-Host "error" -ForegroundColor Red -NoNewl
 
 function Get-ResolvedVersion {
     if ($Version) {
-        if (-not $Version.StartsWith("v")) { $script:Version = "v$Version" }
+        if (-not $Version.StartsWith("v")) { $Version = "v$Version" }
+        $script:Version = $Version
         Write-Info "Using specified version: $script:Version"
         return $script:Version
     }

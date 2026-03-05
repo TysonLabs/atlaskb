@@ -336,3 +336,24 @@ func TestParseGitLog(t *testing.T) {
 		t.Errorf("Decision summary = %q", result.Decisions[0].Summary)
 	}
 }
+
+func TestParsePhase3(t *testing.T) {
+	raw := `{
+		"facts": [
+			{"entity_name":"repo::A","claim":"Decision rationale captured","dimension":"why","category":"pattern","confidence":"high"}
+		],
+		"decisions": [
+			{"summary":"Use X","description":"desc","rationale":"because","alternatives":[{"description":"Y","rejected_because":"too slow"}],"tradeoffs":["complexity"],"pr_number":12,"made_at":"2026-01-01T00:00:00Z"}
+		]
+	}`
+	result, err := ParsePhase3(raw)
+	if err != nil {
+		t.Fatalf("ParsePhase3() error = %v", err)
+	}
+	if len(result.Facts) != 1 {
+		t.Fatalf("facts = %d, want 1", len(result.Facts))
+	}
+	if len(result.Decisions) != 1 {
+		t.Fatalf("decisions = %d, want 1", len(result.Decisions))
+	}
+}
