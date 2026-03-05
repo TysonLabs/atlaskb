@@ -36,7 +36,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	webFS := web.DistFS()
 
-	srv := server.New(pool, embedClient, llmClient, cfg, webFS)
+	srv := server.New(pool, embedClient, llmClient, cfg, webFS, cfgPath)
 
 	addr := fmt.Sprintf(":%d", port)
 	fmt.Printf("AtlasKB dashboard running at http://localhost%s\n", addr)

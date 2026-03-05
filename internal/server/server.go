@@ -16,21 +16,30 @@ import (
 )
 
 type Server struct {
-	pool     *pgxpool.Pool
-	embedder embeddings.Client
-	llm      llm.Client
-	cfg      config.Config
-	router   chi.Router
-	webFS    fs.FS
+	pool       *pgxpool.Pool
+	embedder   embeddings.Client
+	llm        llm.Client
+	cfg        config.Config
+	router     chi.Router
+	webFS      fs.FS
+	configPath string
+	setupMode  bool
 }
 
-func New(pool *pgxpool.Pool, embedder embeddings.Client, llmClient llm.Client, cfg config.Config, webFS fs.FS) *Server {
+func New(pool *pgxpool.Pool, embedder embeddings.Client, llmClient llm.Client, cfg config.Config, webFS fs.FS, configPath string) *Server {
+	if configPath == "" {
+		if p, err := config.ConfigPath(); err == nil {
+			configPath = p
+		}
+	}
 	s := &Server{
-		pool:     pool,
-		embedder: embedder,
-		llm:      llmClient,
-		cfg:      cfg,
-		webFS:    webFS,
+		pool:       pool,
+		embedder:   embedder,
+		llm:        llmClient,
+		cfg:        cfg,
+		webFS:      webFS,
+		configPath: configPath,
+		setupMode:  pool == nil,
 	}
 	s.router = s.buildRouter()
 	return s
@@ -45,6 +54,16 @@ func (s *Server) buildRouter() chi.Router {
 	r.Use(recoveryMiddleware)
 	r.Use(loggingMiddleware)
 	r.Use(corsMiddleware)
+
+	if s.setupMode {
+		r.Route("/api/setup", func(r chi.Router) {
+			r.Get("/status", s.handleSetupStatus)
+			r.Post("/apply", s.handleSetupApply)
+		})
+		r.Get("/api/health", s.handleHealth)
+		r.Get("/*", s.handleSetupPage)
+		return r
+	}
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", s.handleHealth)

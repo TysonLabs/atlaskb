@@ -157,16 +157,14 @@ docker compose up --build
 
 This starts:
 
-- `atlaskb` runtime on `http://localhost:3000`
+- AtlasKB runtime on `http://localhost:3000`
 - PostgreSQL + pgvector as `db` service
 
-Default container LLM/embedding endpoint is `http://host.docker.internal:1234`.
-Override as needed:
+On first run (no config), AtlasKB serves setup mode at `http://localhost:3000`.
+Complete setup in the browser, then restart runtime:
 
 ```bash
-ATLASKB_LLM_URL=http://host.docker.internal:11434 \
-ATLASKB_EMBEDDINGS_URL=http://host.docker.internal:11434 \
-docker compose up --build
+docker compose restart atlaskb
 ```
 
 ## Quick Start
@@ -218,11 +216,24 @@ Start stack:
 docker compose up --build
 ```
 
+Open setup UI:
+
+```bash
+open http://localhost:3000
+```
+
+After setup is saved, restart runtime:
+
+```bash
+docker compose restart atlaskb
+```
+
 Run one-off commands in the app container:
 
 ```bash
 docker compose exec atlaskb atlaskb version
 docker compose exec atlaskb atlaskb status
+docker compose exec -it atlaskb atlaskb setup
 ```
 
 Stop stack:
@@ -766,14 +777,16 @@ Ensure both endpoints are reachable and model IDs are valid.
 
 ### Docker cannot reach host LLM endpoint
 
-Compose defaults LLM/embeddings URL to `http://host.docker.internal:1234`.
+When AtlasKB runs in Docker, host model servers are typically reachable at:
+`http://host.docker.internal:<port>`.
 
-If your host uses another endpoint, set:
+Set LLM and embeddings URL to that value in setup UI (or `atlaskb setup` in container).
+
+If you need to reconfigure:
 
 ```bash
-ATLASKB_LLM_URL=http://host.docker.internal:<port> \
-ATLASKB_EMBEDDINGS_URL=http://host.docker.internal:<port> \
-docker compose up --build
+docker compose exec -it atlaskb atlaskb setup
+docker compose restart atlaskb
 ```
 
 ## Repository Layout

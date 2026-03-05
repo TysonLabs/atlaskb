@@ -25,21 +25,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    environment:
-      ATLASKB_DB_HOST: db
-      ATLASKB_DB_USER: atlaskb
-      ATLASKB_DB_PASSWORD: atlaskb
-      ATLASKB_DB_NAME: atlaskb
-      ATLASKB_LLM_URL: ${ATLASKB_LLM_URL:-http://host.docker.internal:1234}
-      ATLASKB_EMBEDDINGS_URL: ${ATLASKB_EMBEDDINGS_URL:-http://host.docker.internal:1234}
-      ATLASKB_EMBEDDINGS_MODEL: ${ATLASKB_EMBEDDINGS_MODEL:-mxbai-embed-large-v1}
-      ATLASKB_GITHUB_TOKEN: ${ATLASKB_GITHUB_TOKEN:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "3000:3000"
+      - "${ATLASKB_PORT:-3000}:3000"
     volumes:
-      - atlaskb-home:/home/atlaskb/.atlaskb
+      - atlaskb-home:/root/.atlaskb
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null || exit 1"]
       interval: 10s

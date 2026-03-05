@@ -26,6 +26,14 @@ type healthResponse struct {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	resp := healthResponse{Version: version.Version}
 
+	if s.pool == nil {
+		resp.Status = "unconfigured"
+		resp.Readiness = "setup_required"
+		resp.DBConnected = false
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
 	err := s.pool.QueryRow(r.Context(),
 		`SELECT
 			(SELECT COUNT(*) FROM repos),

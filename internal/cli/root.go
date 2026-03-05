@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
@@ -47,6 +48,18 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("loading config: %w", err)
 		}
 
+		// First-run setup mode: allow `atlaskb` / `atlaskb serve` to boot the
+		// web setup flow even when no config file exists yet.
+		if isServeCommand(cmd) {
+			exists, err := configFileExists(cfgPath)
+			if err != nil {
+				return fmt.Errorf("checking config file: %w", err)
+			}
+			if !exists {
+				return nil
+			}
+		}
+
 		pool, err = db.Connect(context.Background(), cfg.Database)
 		if err != nil {
 			return fmt.Errorf("connecting to database: %w", err)
@@ -70,6 +83,32 @@ func skipDBConnection(cmd *cobra.Command) bool {
 		return true
 	}
 	return cmd.Parent() != nil && cmd.Parent().Name() == "config"
+}
+
+func isServeCommand(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	return cmd.Name() == "serve" || cmd.Parent() == nil
+}
+
+func configFileExists(path string) (bool, error) {
+	if path == "" {
+		var err error
+		path, err = config.ConfigPath()
+		if err != nil {
+			return false, err
+		}
+	}
+	path = filepath.Clean(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return !info.IsDir(), nil
 }
 
 func versionOutput() string {

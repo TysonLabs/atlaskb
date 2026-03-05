@@ -83,12 +83,12 @@ type PipelineConfig struct {
 func DefaultConfig() Config {
 	return Config{
 		Database: DatabaseConfig{
-			Host:    "localhost",
-			Port:    5432,
+			Host:     "localhost",
+			Port:     5432,
 			User:     "atlaskb",
 			Password: "atlaskb",
-			DBName:  "atlaskb",
-			SSLMode: "disable",
+			DBName:   "atlaskb",
+			SSLMode:  "disable",
 		},
 		LLM: LLMConfig{
 			BaseURL: "http://localhost:1234",
@@ -143,6 +143,7 @@ func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			applyEnvOverrides(&cfg)
 			return cfg, nil
 		}
 		return cfg, fmt.Errorf("reading config: %w", err)

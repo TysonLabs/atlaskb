@@ -18,22 +18,23 @@ ARG VERSION=dev
 ARG COMMIT=none
 ARG DATE=unknown
 
-RUN CGO_ENABLED=0 go build -ldflags "-s -w \
+RUN CGO_ENABLED=1 go build -ldflags "-s -w \
   -X github.com/tgeorge06/atlaskb/internal/version.Version=${VERSION} \
   -X github.com/tgeorge06/atlaskb/internal/version.Commit=${COMMIT} \
   -X github.com/tgeorge06/atlaskb/internal/version.Date=${DATE}" \
   -o /out/atlaskb ./cmd/atlaskb
 
-FROM alpine:3.21
-RUN apk add --no-cache ca-certificates tzdata git \
-  && addgroup -S atlaskb \
-  && adduser -S atlaskb -G atlaskb
+FROM debian:bookworm-slim
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates tzdata git wget \
+  && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /home/atlaskb
+WORKDIR /root
 COPY --from=go-builder /out/atlaskb /usr/local/bin/atlaskb
+COPY scripts/container-entrypoint.sh /usr/local/bin/container-entrypoint.sh
+RUN chmod +x /usr/local/bin/container-entrypoint.sh
 
-USER atlaskb
 EXPOSE 3000
 
-ENTRYPOINT ["/usr/local/bin/atlaskb"]
+ENTRYPOINT ["/usr/local/bin/container-entrypoint.sh"]
 CMD ["serve", "--port", "3000"]
