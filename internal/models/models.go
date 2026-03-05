@@ -149,6 +149,23 @@ type Fact struct {
 	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
+const (
+	FeedbackPending  = "pending"
+	FeedbackResolved = "resolved"
+)
+
+type FactFeedback struct {
+	ID         uuid.UUID  `json:"id"`
+	FactID     uuid.UUID  `json:"fact_id"`
+	RepoID     uuid.UUID  `json:"repo_id"`
+	Reason     string     `json:"reason"`
+	Correction *string    `json:"correction,omitempty"`
+	Status     string     `json:"status"`
+	Outcome    *string    `json:"outcome,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
+}
+
 type Alternative struct {
 	Description     string `json:"description"`
 	RejectedBecause string `json:"rejected_because"`
@@ -267,28 +284,30 @@ func ClampConfidence(c float32) float32 {
 }
 
 type IndexingRun struct {
-	ID               uuid.UUID  `json:"id"`
-	RepoID           uuid.UUID  `json:"repo_id"`
-	CommitSHA        *string    `json:"commit_sha,omitempty"`
-	Mode             string     `json:"mode"`
-	ModelExtraction  *string    `json:"model_extraction,omitempty"`
-	ModelSynthesis   *string    `json:"model_synthesis,omitempty"`
-	Concurrency      *int       `json:"concurrency,omitempty"`
+	ID              uuid.UUID `json:"id"`
+	RepoID          uuid.UUID `json:"repo_id"`
+	CommitSHA       *string   `json:"commit_sha,omitempty"`
+	Mode            string    `json:"mode"`
+	ModelExtraction *string   `json:"model_extraction,omitempty"`
+	ModelSynthesis  *string   `json:"model_synthesis,omitempty"`
+	Concurrency     *int      `json:"concurrency,omitempty"`
 
-	FilesTotal       *int       `json:"files_total,omitempty"`
-	FilesAnalyzed    *int       `json:"files_analyzed,omitempty"`
-	FilesSkipped     *int       `json:"files_skipped,omitempty"`
-	EntitiesCreated  *int       `json:"entities_created,omitempty"`
-	FactsCreated     *int       `json:"facts_created,omitempty"`
-	RelsCreated      *int       `json:"rels_created,omitempty"`
-	DecisionsCreated *int       `json:"decisions_created,omitempty"`
+	FilesTotal       *int `json:"files_total,omitempty"`
+	FilesAnalyzed    *int `json:"files_analyzed,omitempty"`
+	FilesSkipped     *int `json:"files_skipped,omitempty"`
+	EntitiesCreated  *int `json:"entities_created,omitempty"`
+	FactsCreated     *int `json:"facts_created,omitempty"`
+	RelsCreated      *int `json:"rels_created,omitempty"`
+	DecisionsCreated *int `json:"decisions_created,omitempty"`
+	ParseFallbacks   *int `json:"parse_fallbacks,omitempty"`
+	UnresolvedRefs   *int `json:"unresolved_refs,omitempty"`
 
-	OrphanEntities   *int       `json:"orphan_entities,omitempty"`
-	BackfillFacts    *int       `json:"backfill_facts,omitempty"`
-	BackfillRels     *int       `json:"backfill_rels,omitempty"`
+	OrphanEntities *int `json:"orphan_entities,omitempty"`
+	BackfillFacts  *int `json:"backfill_facts,omitempty"`
+	BackfillRels   *int `json:"backfill_rels,omitempty"`
 
-	TotalTokens      *int       `json:"total_tokens,omitempty"`
-	TotalCostUSD     *float64   `json:"total_cost_usd,omitempty"`
+	TotalTokens  *int     `json:"total_tokens,omitempty"`
+	TotalCostUSD *float64 `json:"total_cost_usd,omitempty"`
 
 	QualityOverall     *float64 `json:"quality_overall,omitempty"`
 	QualityEntityCov   *float64 `json:"quality_entity_cov,omitempty"`
@@ -297,8 +316,8 @@ type IndexingRun struct {
 	QualityDimCoverage *float64 `json:"quality_dim_coverage,omitempty"`
 	QualityParseRate   *float64 `json:"quality_parse_rate,omitempty"`
 
-	DurationMS       *int64     `json:"duration_ms,omitempty"`
-	StartedAt        time.Time  `json:"started_at"`
-	CompletedAt      *time.Time `json:"completed_at,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
+	DurationMS  *int64     `json:"duration_ms,omitempty"`
+	StartedAt   time.Time  `json:"started_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 }

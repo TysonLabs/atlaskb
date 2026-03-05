@@ -20,9 +20,9 @@ func (s *IndexingRunStore) Create(ctx context.Context, r *IndexingRun) error {
 	r.CreatedAt = r.StartedAt
 
 	_, err := s.Pool.Exec(ctx,
-		`INSERT INTO indexing_runs (id, repo_id, commit_sha, mode, model_extraction, model_synthesis, concurrency, started_at, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		r.ID, r.RepoID, r.CommitSHA, r.Mode, r.ModelExtraction, r.ModelSynthesis, r.Concurrency, r.StartedAt, r.CreatedAt,
+		`INSERT INTO indexing_runs (id, repo_id, commit_sha, mode, model_extraction, model_synthesis, concurrency, parse_fallbacks, unresolved_refs, started_at, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		r.ID, r.RepoID, r.CommitSHA, r.Mode, r.ModelExtraction, r.ModelSynthesis, r.Concurrency, r.ParseFallbacks, r.UnresolvedRefs, r.StartedAt, r.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting indexing run: %w", err)
@@ -38,15 +38,17 @@ func (s *IndexingRunStore) Complete(ctx context.Context, r *IndexingRun) error {
 		`UPDATE indexing_runs SET
 			files_total = $2, files_analyzed = $3, files_skipped = $4,
 			entities_created = $5, facts_created = $6, rels_created = $7, decisions_created = $8,
-			orphan_entities = $9, backfill_facts = $10, backfill_rels = $11,
-			total_tokens = $12, total_cost_usd = $13,
-			quality_overall = $14, quality_entity_cov = $15, quality_fact_density = $16,
-			quality_rel_connect = $17, quality_dim_coverage = $18, quality_parse_rate = $19,
-			duration_ms = $20, completed_at = $21
+			parse_fallbacks = $9, unresolved_refs = $10,
+			orphan_entities = $11, backfill_facts = $12, backfill_rels = $13,
+			total_tokens = $14, total_cost_usd = $15,
+			quality_overall = $16, quality_entity_cov = $17, quality_fact_density = $18,
+			quality_rel_connect = $19, quality_dim_coverage = $20, quality_parse_rate = $21,
+			duration_ms = $22, completed_at = $23
 		 WHERE id = $1`,
 		r.ID,
 		r.FilesTotal, r.FilesAnalyzed, r.FilesSkipped,
 		r.EntitiesCreated, r.FactsCreated, r.RelsCreated, r.DecisionsCreated,
+		r.ParseFallbacks, r.UnresolvedRefs,
 		r.OrphanEntities, r.BackfillFacts, r.BackfillRels,
 		r.TotalTokens, r.TotalCostUSD,
 		r.QualityOverall, r.QualityEntityCov, r.QualityFactDensity,
@@ -64,7 +66,7 @@ func (s *IndexingRunStore) GetLatest(ctx context.Context, repoID uuid.UUID) (*In
 	err := s.Pool.QueryRow(ctx,
 		`SELECT id, repo_id, commit_sha, mode, model_extraction, model_synthesis, concurrency,
 			files_total, files_analyzed, files_skipped,
-			entities_created, facts_created, rels_created, decisions_created,
+			entities_created, facts_created, rels_created, decisions_created, parse_fallbacks, unresolved_refs,
 			orphan_entities, backfill_facts, backfill_rels,
 			total_tokens, total_cost_usd,
 			quality_overall, quality_entity_cov, quality_fact_density,
@@ -74,7 +76,7 @@ func (s *IndexingRunStore) GetLatest(ctx context.Context, repoID uuid.UUID) (*In
 	).Scan(
 		&r.ID, &r.RepoID, &r.CommitSHA, &r.Mode, &r.ModelExtraction, &r.ModelSynthesis, &r.Concurrency,
 		&r.FilesTotal, &r.FilesAnalyzed, &r.FilesSkipped,
-		&r.EntitiesCreated, &r.FactsCreated, &r.RelsCreated, &r.DecisionsCreated,
+		&r.EntitiesCreated, &r.FactsCreated, &r.RelsCreated, &r.DecisionsCreated, &r.ParseFallbacks, &r.UnresolvedRefs,
 		&r.OrphanEntities, &r.BackfillFacts, &r.BackfillRels,
 		&r.TotalTokens, &r.TotalCostUSD,
 		&r.QualityOverall, &r.QualityEntityCov, &r.QualityFactDensity,
@@ -94,7 +96,7 @@ func (s *IndexingRunStore) ListByRepo(ctx context.Context, repoID uuid.UUID) ([]
 	rows, err := s.Pool.Query(ctx,
 		`SELECT id, repo_id, commit_sha, mode, model_extraction, model_synthesis, concurrency,
 			files_total, files_analyzed, files_skipped,
-			entities_created, facts_created, rels_created, decisions_created,
+			entities_created, facts_created, rels_created, decisions_created, parse_fallbacks, unresolved_refs,
 			orphan_entities, backfill_facts, backfill_rels,
 			total_tokens, total_cost_usd,
 			quality_overall, quality_entity_cov, quality_fact_density,
@@ -113,7 +115,7 @@ func (s *IndexingRunStore) ListByRepo(ctx context.Context, repoID uuid.UUID) ([]
 		if err := rows.Scan(
 			&r.ID, &r.RepoID, &r.CommitSHA, &r.Mode, &r.ModelExtraction, &r.ModelSynthesis, &r.Concurrency,
 			&r.FilesTotal, &r.FilesAnalyzed, &r.FilesSkipped,
-			&r.EntitiesCreated, &r.FactsCreated, &r.RelsCreated, &r.DecisionsCreated,
+			&r.EntitiesCreated, &r.FactsCreated, &r.RelsCreated, &r.DecisionsCreated, &r.ParseFallbacks, &r.UnresolvedRefs,
 			&r.OrphanEntities, &r.BackfillFacts, &r.BackfillRels,
 			&r.TotalTokens, &r.TotalCostUSD,
 			&r.QualityOverall, &r.QualityEntityCov, &r.QualityFactDensity,

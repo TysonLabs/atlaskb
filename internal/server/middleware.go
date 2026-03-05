@@ -4,7 +4,10 @@ import (
 	"log"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"time"
+
+	"github.com/tgeorge06/atlaskb/internal/telemetry"
 )
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -37,7 +40,14 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		wrapped := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(wrapped, r)
-		log.Printf("%s %s %d %s", r.Method, r.URL.Path, wrapped.status, time.Since(start).Round(time.Millisecond))
+		elapsed := time.Since(start)
+		telemetry.IncCounter("http_requests_total")
+		telemetry.IncCounter("http_status_" + strconv.Itoa(wrapped.status))
+		if wrapped.status >= 500 {
+			telemetry.IncCounter("http_server_errors_total")
+		}
+		telemetry.ObserveDuration("http_request_duration_ms", elapsed)
+		log.Printf("%s %s %d %s", r.Method, r.URL.Path, wrapped.status, elapsed.Round(time.Millisecond))
 	})
 }
 

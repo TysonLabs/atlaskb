@@ -16,20 +16,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/tgeorge06/atlaskb/internal/llm"
 	"github.com/tgeorge06/atlaskb/internal/models"
+	"github.com/tgeorge06/atlaskb/internal/telemetry"
 	"golang.org/x/sync/errgroup"
 )
 
 type Phase2Config struct {
-	RepoID       uuid.UUID
-	RepoName     string
-	RepoPath     string
-	Manifest     *Manifest
-	Model        string
-	Concurrency  int
-	Pool         *pgxpool.Pool
-	LLM          llm.Client
-	Roster       []EntityEntry // Ctags-derived entity roster for grounding names
-	ProgressFunc func(msg string)
+	RepoID        uuid.UUID
+	RepoName      string
+	RepoPath      string
+	Manifest      *Manifest
+	Model         string
+	Concurrency   int
+	Pool          *pgxpool.Pool
+	LLM           llm.Client
+	Roster        []EntityEntry // Ctags-derived entity roster for grounding names
+	ProgressFunc  func(msg string)
 	ContextWindow int // Model context window in tokens (0 = use default 32768)
 }
 
@@ -62,7 +63,6 @@ func computeOutputBudget(symbolCount, contextWindow int) int {
 	return tokens
 }
 
-
 type Phase2Stats struct {
 	FilesProcessed  int
 	FilesSkipped    int
@@ -72,6 +72,8 @@ type Phase2Stats struct {
 	RelsDeferred    int
 	RelsResolved    int
 	TotalTokens     int
+	ParseFallbacks  int
+	UnresolvedRefs  int
 }
 
 // DeferredRelationship is a relationship that couldn't be resolved during initial
@@ -208,14 +210,17 @@ func RunPhase2(ctx context.Context, cfg Phase2Config) (*Phase2Stats, error) {
 	// Second pass: resolve deferred relationships now that all entities are in the DB
 	if len(deferred) > 0 {
 		resolved := 0
+		stillUnresolved := 0
 		for _, d := range deferred {
 			fromID, fromOK := resolveEntity(ctx, entityStore, cfg.RepoID, d.From)
 			if !fromOK {
+				stillUnresolved++
 				logVerboseF("[phase2-deferred] %s: still unresolved (from): %s", d.SourceFile, d.From)
 				continue
 			}
 			toID, toOK := resolveEntity(ctx, entityStore, cfg.RepoID, d.To)
 			if !toOK {
+				stillUnresolved++
 				logVerboseF("[phase2-deferred] %s: still unresolved (to): %s", d.SourceFile, d.To)
 				continue
 			}
@@ -242,9 +247,13 @@ func RunPhase2(ctx context.Context, cfg Phase2Config) (*Phase2Stats, error) {
 		}
 		stats.RelsDeferred = len(deferred)
 		stats.RelsResolved = resolved
+		stats.UnresolvedRefs += stillUnresolved
+		if stillUnresolved > 0 {
+			telemetry.AddCounter("pipeline_unresolved_entity_refs_total", int64(stillUnresolved))
+		}
 		if resolved > 0 || len(deferred) > 0 {
 			fmt.Printf("  Deferred relationships: %d total, %d resolved, %d still unresolved\n",
-				len(deferred), resolved, len(deferred)-resolved)
+				len(deferred), resolved, stillUnresolved)
 		}
 	}
 
@@ -315,8 +324,10 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 
 		// CleanJSON uses jsonrepair which handles truncation, missing commas,
 		// unquoted keys, and other common LLM JSON failures.
-		result, err = ParsePhase2(resp.Content)
+		var fallbacks int
+		result, fallbacks, err = ParsePhase2WithMetrics(resp.Content)
 		if err == nil {
+			stats.ParseFallbacks += fallbacks
 			break
 		}
 
@@ -542,15 +553,17 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 	}
 
 	// Store facts — track which entities receive facts for orphan diagnostics
-	entitiesWithFacts := make(map[uuid.UUID]int)    // entity ID → fact count
+	entitiesWithFacts := make(map[uuid.UUID]int) // entity ID → fact count
 	factsSkippedNoEntity := 0
 	factsSkippedError := 0
 	var unresolvedFactNames []string
+	unresolvedRefs := 0
 	for _, ext := range result.Facts {
 		entityID, ok := resolveEntityWithMap(ctx, entityStore, cfg.RepoID, ext.EntityName, entityMap)
 		if !ok {
 			factsSkippedNoEntity++
 			unresolvedFactNames = append(unresolvedFactNames, ext.EntityName)
+			unresolvedRefs++
 			logVerboseF("[phase2] %s: fact skipped (entity not found): %q → claim: %q", job.Target, ext.EntityName, truncStr(ext.Claim, 80))
 			continue
 		}
@@ -635,6 +648,7 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 				RepoName:    cfg.RepoName,
 				AnalyzedAt:  job.CreatedAt.Format("2006-01-02T15:04:05Z"),
 			})
+			unresolvedRefs++
 			logVerboseF("[phase2] %s: relationship deferred (entity not yet available): %s → %s", job.Target, ext.From, ext.To)
 			continue
 		}
@@ -660,6 +674,10 @@ func processFile(ctx context.Context, cfg Phase2Config, job *models.ExtractionJo
 		}
 	}
 	stats.RelsCreated += relsCreated
+	if unresolvedRefs > 0 {
+		stats.UnresolvedRefs += unresolvedRefs
+		telemetry.AddCounter("pipeline_unresolved_entity_refs_total", int64(unresolvedRefs))
+	}
 
 	// Mark job complete
 	stats.TotalTokens += resp.InputTokens + resp.OutputTokens

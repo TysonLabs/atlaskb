@@ -7,6 +7,7 @@ import (
 
 	"github.com/kaptinlin/jsonrepair"
 	"github.com/tgeorge06/atlaskb/internal/models"
+	"github.com/tgeorge06/atlaskb/internal/telemetry"
 )
 
 // Phase2Result is the parsed output from a phase 2 LLM call.
@@ -155,42 +156,66 @@ var (
 	}
 )
 
-func sanitizeOrDefault(val string, valid map[string]bool, fallback string) string {
+func sanitizeOrDefault(val string, valid map[string]bool, fallback string) (string, bool) {
 	val = strings.ToLower(strings.TrimSpace(val))
 	if valid[val] {
-		return val
+		return val, false
 	}
-	return fallback
+	return fallback, true
 }
 
-func sanitizeEntities(entities []ExtractedEntity) []ExtractedEntity {
+func sanitizeEntities(entities []ExtractedEntity) ([]ExtractedEntity, int) {
 	var out []ExtractedEntity
+	fallbacks := 0
 	for _, e := range entities {
-		e.Kind = sanitizeOrDefault(e.Kind, validEntityKinds, models.EntityConcept)
+		var used bool
+		e.Kind, used = sanitizeOrDefault(e.Kind, validEntityKinds, models.EntityConcept)
+		if used {
+			fallbacks++
+		}
 		out = append(out, e)
 	}
-	return out
+	return out, fallbacks
 }
 
-func sanitizeFacts(facts []ExtractedFact) []ExtractedFact {
+func sanitizeFacts(facts []ExtractedFact) ([]ExtractedFact, int) {
 	var out []ExtractedFact
+	fallbacks := 0
 	for _, f := range facts {
-		f.Dimension = sanitizeOrDefault(f.Dimension, validFactDimensions, models.DimensionWhat)
-		f.Category = sanitizeOrDefault(f.Category, validFactCategories, models.CategoryBehavior)
-		f.Confidence = sanitizeOrDefault(f.Confidence, validConfidenceLevels, models.ConfidenceMedium)
+		var used bool
+		f.Dimension, used = sanitizeOrDefault(f.Dimension, validFactDimensions, models.DimensionWhat)
+		if used {
+			fallbacks++
+		}
+		f.Category, used = sanitizeOrDefault(f.Category, validFactCategories, models.CategoryBehavior)
+		if used {
+			fallbacks++
+		}
+		f.Confidence, used = sanitizeOrDefault(f.Confidence, validConfidenceLevels, models.ConfidenceMedium)
+		if used {
+			fallbacks++
+		}
 		out = append(out, f)
 	}
-	return out
+	return out, fallbacks
 }
 
-func sanitizeRelationships(rels []ExtractedRelation) []ExtractedRelation {
+func sanitizeRelationships(rels []ExtractedRelation) ([]ExtractedRelation, int) {
 	var out []ExtractedRelation
+	fallbacks := 0
 	for _, r := range rels {
-		r.Kind = sanitizeOrDefault(r.Kind, validRelKinds, models.RelDependsOn)
-		r.Strength = sanitizeOrDefault(r.Strength, validRelStrengths, models.StrengthModerate)
+		var used bool
+		r.Kind, used = sanitizeOrDefault(r.Kind, validRelKinds, models.RelDependsOn)
+		if used {
+			fallbacks++
+		}
+		r.Strength, used = sanitizeOrDefault(r.Strength, validRelStrengths, models.StrengthModerate)
+		if used {
+			fallbacks++
+		}
 		out = append(out, r)
 	}
-	return out
+	return out, fallbacks
 }
 
 // normalizeQualifiedName cleans up a qualified_name produced by the LLM:
@@ -263,18 +288,29 @@ func normalizeQualifiedNames(result *Phase2Result) {
 // --- Parse functions ---
 
 func ParsePhase2(raw string) (*Phase2Result, error) {
+	result, _, err := ParsePhase2WithMetrics(raw)
+	return result, err
+}
+
+func ParsePhase2WithMetrics(raw string) (*Phase2Result, int, error) {
 	cleaned := CleanJSON(raw)
 	var result Phase2Result
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	result.Entities = sanitizeEntities(result.Entities)
-	result.Facts = sanitizeFacts(result.Facts)
-	result.Relationships = sanitizeRelationships(result.Relationships)
+	entities, entityFallbacks := sanitizeEntities(result.Entities)
+	facts, factFallbacks := sanitizeFacts(result.Facts)
+	rels, relFallbacks := sanitizeRelationships(result.Relationships)
+	result.Entities = entities
+	result.Facts = facts
+	result.Relationships = rels
 	normalizeQualifiedNames(&result)
-	return &result, nil
+	fallbacks := entityFallbacks + factFallbacks + relFallbacks
+	if fallbacks > 0 {
+		telemetry.AddCounter("parser_sanitization_fallback_total", int64(fallbacks))
+	}
+	return &result, fallbacks, nil
 }
-
 
 func ParsePhase4(raw string) (*Phase4Result, error) {
 	cleaned := CleanJSON(raw)
@@ -282,8 +318,13 @@ func ParsePhase4(raw string) (*Phase4Result, error) {
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
 		return nil, err
 	}
-	result.Facts = sanitizeFacts(result.Facts)
-	result.Relationships = sanitizeRelationships(result.Relationships)
+	facts, factFallbacks := sanitizeFacts(result.Facts)
+	rels, relFallbacks := sanitizeRelationships(result.Relationships)
+	result.Facts = facts
+	result.Relationships = rels
+	if n := factFallbacks + relFallbacks; n > 0 {
+		telemetry.AddCounter("parser_sanitization_fallback_total", int64(n))
+	}
 	for i := range result.Facts {
 		result.Facts[i].EntityName = normalizeQualifiedName(result.Facts[i].EntityName)
 	}
@@ -329,7 +370,7 @@ func ParsePhase3(raw string) (*Phase3Result, error) {
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
 		return nil, err
 	}
-	result.Facts = sanitizeFacts(result.Facts)
+	result.Facts, _ = sanitizeFacts(result.Facts)
 	return &result, nil
 }
 
@@ -339,6 +380,6 @@ func ParseGitLog(raw string) (*GitLogResult, error) {
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
 		return nil, err
 	}
-	result.Facts = sanitizeFacts(result.Facts)
+	result.Facts, _ = sanitizeFacts(result.Facts)
 	return &result, nil
 }

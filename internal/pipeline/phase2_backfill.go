@@ -192,8 +192,8 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 				return nil
 			}
 
-			result.Facts = sanitizeFacts(result.Facts)
-			result.Relationships = sanitizeRelationships(result.Relationships)
+			result.Facts, _ = sanitizeFacts(result.Facts)
+			result.Relationships, _ = sanitizeRelationships(result.Relationships)
 
 			// Store facts
 			factsCreated := 0
@@ -396,7 +396,7 @@ func RunBackfill(ctx context.Context, cfg BackfillConfig) (*BackfillStats, error
 				if err := parseJSON(cleaned, &result); err != nil {
 					return nil
 				}
-				result.Relationships = sanitizeRelationships(result.Relationships)
+				result.Relationships, _ = sanitizeRelationships(result.Relationships)
 
 				relsCreated := 0
 				for _, er := range result.Relationships {
