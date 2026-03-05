@@ -48,6 +48,17 @@ func (s *FactStore) UpdateEmbedding(ctx context.Context, id uuid.UUID, embedding
 	return nil
 }
 
+func (s *FactStore) UpdateConfidence(ctx context.Context, id uuid.UUID, confidence string) error {
+	_, err := s.Pool.Exec(ctx,
+		`UPDATE facts SET confidence = $2, updated_at = now() WHERE id = $1`,
+		id, confidence,
+	)
+	if err != nil {
+		return fmt.Errorf("updating fact confidence: %w", err)
+	}
+	return nil
+}
+
 func (s *FactStore) GetByID(ctx context.Context, id uuid.UUID) (*Fact, error) {
 	f := &Fact{}
 	var provJSON []byte

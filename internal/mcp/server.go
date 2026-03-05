@@ -29,13 +29,50 @@ func NewServer(pool *pgxpool.Pool, embedder embeddings.Client) *Server {
 	return &Server{pool: pool, embedder: embedder}
 }
 
+const (
+	ToolSearchKnowledgeBase  = "search_knowledge_base"
+	ToolListRepos            = "list_repos"
+	ToolGetConventions       = "get_conventions"
+	ToolGetModuleContext     = "get_module_context"
+	ToolGetServiceContract   = "get_service_contract"
+	ToolGetImpactAnalysis    = "get_impact_analysis"
+	ToolGetDecisionContext   = "get_decision_context"
+	ToolGetTaskContext       = "get_task_context"
+	ToolGetExecutionFlows    = "get_execution_flows"
+	ToolGetFunctionalCluster = "get_functional_clusters"
+	ToolGetRepoOverview      = "get_repo_overview"
+	ToolSearchEntities       = "search_entities"
+	ToolGetEntitySource      = "get_entity_source"
+	ToolSubmitFactFeedback   = "submit_fact_feedback"
+)
+
+// ToolNames returns the canonical MCP tool contract names in registration order.
+func ToolNames() []string {
+	return []string{
+		ToolSearchKnowledgeBase,
+		ToolListRepos,
+		ToolGetConventions,
+		ToolGetModuleContext,
+		ToolGetServiceContract,
+		ToolGetImpactAnalysis,
+		ToolGetDecisionContext,
+		ToolGetTaskContext,
+		ToolGetExecutionFlows,
+		ToolGetFunctionalCluster,
+		ToolGetRepoOverview,
+		ToolSearchEntities,
+		ToolGetEntitySource,
+		ToolSubmitFactFeedback,
+	}
+}
+
 // RegisterTools registers all AtlasKB MCP tools on the given go-sdk Server.
 // This is used by both the stdio transport (Run) and the HTTP transport (web server).
 func RegisterTools(srv *gomcp.Server, pool *pgxpool.Pool, embedder embeddings.Client) {
 	s := &Server{pool: pool, embedder: embedder}
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name: "search_knowledge_base",
+		Name: ToolSearchKnowledgeBase,
 		Description: `Search the code knowledge graph using natural language. Use this to answer questions like "how does auth work?" or "what patterns are used for error handling?".
 Returns facts (assertions about code) with their source entity, confidence, and provenance.
 mode=facts (default): returns individual ranked facts. mode=graph: returns (entity)-[relationship]->(entity) triplets showing how code entities relate.
@@ -43,19 +80,19 @@ Use this when you don't know which file or entity to look at — it searches acr
 	}, s.handleSearch)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name:        "list_repos",
+		Name:        ToolListRepos,
 		Description: "List all repositories indexed in AtlasKB with their names and last indexed timestamps. Call this first to discover available repo names for use with other tools.",
 	}, s.handleListRepos)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name: "get_conventions",
+		Name: ToolGetConventions,
 		Description: `Get coding conventions and patterns (e.g. error handling style, naming conventions, import patterns, auth approach).
 Use this to understand HOW code should be written in a repo — before writing new code or reviewing existing code.
 When repo is omitted, returns org-wide conventions across all repos (useful for understanding cross-repo standards).`,
 	}, s.handleGetConventions)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name: "get_module_context",
+		Name: ToolGetModuleContext,
 		Description: `Get detailed context about a specific file, function, type, or module. Returns its summary, capabilities, assumptions, and facts.
 Use this when you need to understand what a specific piece of code does before modifying or using it.
 Set depth=deep to also get its relationships (what it calls, what calls it, what it depends on).
@@ -63,65 +100,71 @@ The path parameter accepts file paths (e.g. "internal/server/handlers.go") or qu
 	}, s.handleGetModuleContext)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name: "get_service_contract",
+		Name: ToolGetServiceContract,
 		Description: `Get the public contract of a code entity: who depends on it and what invariants it must maintain.
 Use this BEFORE modifying a function, type, or module to understand what would break — shows all downstream dependents and behavioral contracts.
 Critical for safe refactoring and API changes.`,
 	}, s.handleGetServiceContract)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name: "get_impact_analysis",
+		Name: ToolGetImpactAnalysis,
 		Description: `Analyze the dependency graph around a code entity with N-hop traversal. Shows direct impacts and transitive dependency chains.
 Use this to answer "what would be affected if I change X?" — traces through calls, depends_on, imports, and other relationship types.
 Returns direct impacts (1 hop) and transitive paths (multi-hop chains) with affected repos listed.`,
 	}, s.handleGetImpactAnalysis)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name: "get_decision_context",
+		Name: ToolGetDecisionContext,
 		Description: `Get architectural decisions linked to a code entity — why it was built this way, what alternatives were considered, and what tradeoffs were accepted.
 Use this when you need to understand the rationale behind existing code, or before proposing changes that might conflict with past decisions.`,
 	}, s.handleGetDecisionContext)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name: "get_task_context",
+		Name: ToolGetTaskContext,
 		Description: `RECOMMENDED: Start here for any coding task. Bundles conventions, module context, service contracts, decisions, and staleness info for a set of files in one call.
 Prefer this over calling get_module_context, get_service_contract, get_conventions, and get_decision_context separately — it combines all of them efficiently.
 Pass the files you plan to read or modify. Returns everything you need to understand the code and write changes safely.`,
 	}, s.handleGetTaskContext)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name: "get_execution_flows",
+		Name: ToolGetExecutionFlows,
 		Description: `Get detected execution flows (call chains) through the codebase — shows how functions call each other in sequence from entry points.
 Use this to understand runtime behavior: "what happens when HandleRequest is called?" or "what functions does ProcessOrder invoke?".
 Use the 'through' parameter to filter to flows passing through a specific function.`,
 	}, s.handleGetExecutionFlows)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name: "get_functional_clusters",
+		Name: ToolGetFunctionalCluster,
 		Description: `Get functional clusters — groups of code entities that form cohesive areas based on their call/dependency relationships.
 Use this to understand the high-level architecture: what are the major subsystems and which files/functions belong to each.
 Useful for onboarding to a new codebase or planning large refactors.`,
 	}, s.handleGetFunctionalClusters)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name: "get_repo_overview",
+		Name: ToolGetRepoOverview,
 		Description: `Get a high-level architectural overview of a repository with entity, fact, relationship, and decision counts.
 Use this to quickly understand what a repo does, its major components, and its scale — before diving into specific files or entities.`,
 	}, s.handleGetRepoOverview)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name: "search_entities",
+		Name: ToolSearchEntities,
 		Description: `Search for code entities (functions, types, modules, services, endpoints, configs) by name or kind.
 Use this to find specific code symbols — e.g. "find all endpoints" or "find functions matching Handler".
 Returns entity name, kind, file path, and summary. Click through to get_module_context for full details.`,
 	}, s.handleSearchEntities)
 
 	gomcp.AddTool(srv, &gomcp.Tool{
-		Name: "get_entity_source",
+		Name: ToolGetEntitySource,
 		Description: `Read the source code of a file from an indexed repository. Returns the raw file content.
 Use this when you need to see the actual implementation — after using get_module_context to understand what a file does.
 The path is relative to the repo root (e.g. "internal/server/handlers.go"). Files larger than 500KB are truncated.`,
 	}, s.handleGetEntitySource)
+
+	gomcp.AddTool(srv, &gomcp.Tool{
+		Name: ToolSubmitFactFeedback,
+		Description: `Submit feedback for an incorrect or outdated fact.
+Provide fact_id from search_knowledge_base results, include a reason, and optional corrected text.`,
+	}, s.handleSubmitFactFeedback)
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -255,11 +298,11 @@ type getServiceContractInput struct {
 }
 
 type getImpactAnalysisInput struct {
-	Repo       string   `json:"repo" jsonschema:"Repository name (required)"`
-	Path       string   `json:"path" jsonschema:"File path or qualified name of the entity (required)"`
-	MaxHops    int      `json:"max_hops,omitempty" jsonschema:"Max traversal depth (default 2, max 5)"`
-	RelKinds   []string `json:"rel_kinds,omitempty" jsonschema:"Filter by relationship kinds (e.g. depends_on, calls)"`
-	MaxResults int      `json:"max_results,omitempty" jsonschema:"Max results to return (default 50, max 200)"`
+	Repo          string   `json:"repo" jsonschema:"Repository name (required)"`
+	Path          string   `json:"path" jsonschema:"File path or qualified name of the entity (required)"`
+	MaxHops       int      `json:"max_hops,omitempty" jsonschema:"Max traversal depth (default 2, max 5)"`
+	RelKinds      []string `json:"rel_kinds,omitempty" jsonschema:"Filter by relationship kinds (e.g. depends_on, calls)"`
+	MaxResults    int      `json:"max_results,omitempty" jsonschema:"Max results to return (default 50, max 200)"`
 	MinConfidence float32  `json:"min_confidence,omitempty" jsonschema:"Minimum confidence threshold (0.0-1.0) to filter relationships"`
 }
 
@@ -292,11 +335,11 @@ type getRepoOverviewInput struct {
 }
 
 type searchEntitiesInput struct {
-	Repo       string `json:"repo,omitempty" jsonschema:"Filter to a specific repository name (omit to search all repos)"`
-	Query      string `json:"query,omitempty" jsonschema:"Search by name (e.g. 'Handler', 'UserService') — matches partial names"`
-	Kind       string `json:"kind,omitempty" jsonschema:"Filter by entity kind: function, type, module, service, endpoint, config, concept, cluster"`
-	Limit      int    `json:"limit,omitempty" jsonschema:"Max results to return (default 20, max 100)"`
-	Offset     int    `json:"offset,omitempty" jsonschema:"Offset for pagination (default 0)"`
+	Repo   string `json:"repo,omitempty" jsonschema:"Filter to a specific repository name (omit to search all repos)"`
+	Query  string `json:"query,omitempty" jsonschema:"Search by name (e.g. 'Handler', 'UserService') — matches partial names"`
+	Kind   string `json:"kind,omitempty" jsonschema:"Filter by entity kind: function, type, module, service, endpoint, config, concept, cluster"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"Max results to return (default 20, max 100)"`
+	Offset int    `json:"offset,omitempty" jsonschema:"Offset for pagination (default 0)"`
 }
 
 type getEntitySourceInput struct {
@@ -304,19 +347,31 @@ type getEntitySourceInput struct {
 	Path string `json:"path" jsonschema:"File path relative to repo root (e.g. 'internal/server/handlers.go')"`
 }
 
+type submitFactFeedbackInput struct {
+	FactID     string `json:"fact_id" jsonschema:"Fact ID from search_knowledge_base result (required)"`
+	Reason     string `json:"reason" jsonschema:"Why this fact is incorrect/outdated (required)"`
+	Correction string `json:"correction,omitempty" jsonschema:"Optional corrected claim text"`
+}
+
 // ── Response types ───────────────────────────────────────────────────────────
 
 type searchResultItem struct {
-	Entity     string             `json:"entity"`
-	EntityKind string             `json:"entity_kind"`
-	Path       string             `json:"path,omitempty"`
-	Repo       string             `json:"repo,omitempty"`
-	Claim      string             `json:"claim"`
-	Dimension  string             `json:"dimension"`
-	Category   string             `json:"category"`
-	Confidence string             `json:"confidence"`
-	Score      float64            `json:"score"`
-	Provenance []models.Provenance `json:"provenance,omitempty"`
+	FactID          string              `json:"fact_id"`
+	Entity          string              `json:"entity"`
+	EntityKind      string              `json:"entity_kind"`
+	Path            string              `json:"path,omitempty"`
+	Repo            string              `json:"repo,omitempty"`
+	Claim           string              `json:"claim"`
+	Dimension       string              `json:"dimension"`
+	Category        string              `json:"category"`
+	Confidence      string              `json:"confidence"`
+	Score           float64             `json:"score"`
+	Provenance      []models.Provenance `json:"provenance,omitempty"`
+	Stale           bool                `json:"stale"`
+	StaleReasons    []string            `json:"stale_reasons,omitempty"`
+	CommitsBehind   *int                `json:"commits_behind,omitempty"`
+	Flagged         bool                `json:"flagged"`
+	PendingFeedback int                 `json:"pending_feedback,omitempty"`
 }
 
 type tripletResultItem struct {
@@ -374,43 +429,43 @@ type factItem struct {
 }
 
 type relationshipItem struct {
-	Name             string `json:"name"`
-	Kind             string `json:"kind"`
-	Path             string `json:"path,omitempty"`
-	Repo             string `json:"repo,omitempty"`
-	RelationshipKind string `json:"relationship_kind"`
-	Direction        string `json:"direction,omitempty"`
+	Name             string  `json:"name"`
+	Kind             string  `json:"kind"`
+	Path             string  `json:"path,omitempty"`
+	Repo             string  `json:"repo,omitempty"`
+	RelationshipKind string  `json:"relationship_kind"`
+	Direction        string  `json:"direction,omitempty"`
 	Confidence       float32 `json:"confidence,omitempty"`
 }
 
 type moduleContextResponse struct {
-	Entity        entitySummary    `json:"entity"`
-	Facts         []factItem       `json:"facts"`
+	Entity        entitySummary      `json:"entity"`
+	Facts         []factItem         `json:"facts"`
 	Relationships []relationshipItem `json:"relationships,omitempty"`
 }
 
 type dependentItem struct {
-	Name             string `json:"name"`
-	Kind             string `json:"kind"`
-	Path             string `json:"path,omitempty"`
-	Repo             string `json:"repo,omitempty"`
-	RelationshipKind string `json:"relationship_kind"`
+	Name             string  `json:"name"`
+	Kind             string  `json:"kind"`
+	Path             string  `json:"path,omitempty"`
+	Repo             string  `json:"repo,omitempty"`
+	RelationshipKind string  `json:"relationship_kind"`
 	Confidence       float32 `json:"confidence,omitempty"`
 }
 
 type serviceContractResponse struct {
-	Entity     entitySummary  `json:"entity"`
+	Entity     entitySummary   `json:"entity"`
 	Dependents []dependentItem `json:"dependents"`
-	Invariants []factItem     `json:"invariants"`
+	Invariants []factItem      `json:"invariants"`
 }
 
 type impactItem struct {
-	Name             string `json:"name"`
-	Kind             string `json:"kind"`
-	Path             string `json:"path,omitempty"`
-	Repo             string `json:"repo,omitempty"`
-	Direction        string `json:"direction"`
-	RelationshipKind string `json:"relationship_kind"`
+	Name             string  `json:"name"`
+	Kind             string  `json:"kind"`
+	Path             string  `json:"path,omitempty"`
+	Repo             string  `json:"repo,omitempty"`
+	Direction        string  `json:"direction"`
+	RelationshipKind string  `json:"relationship_kind"`
 	Confidence       float32 `json:"confidence"`
 }
 
@@ -433,12 +488,12 @@ type impactAnalysisResponse struct {
 }
 
 type decisionItem struct {
-	Summary      string              `json:"summary"`
-	Description  string              `json:"description"`
-	Rationale    string              `json:"rationale"`
+	Summary      string               `json:"summary"`
+	Description  string               `json:"description"`
+	Rationale    string               `json:"rationale"`
 	Alternatives []models.Alternative `json:"alternatives,omitempty"`
-	Tradeoffs    []string            `json:"tradeoffs,omitempty"`
-	StillValid   bool                `json:"still_valid"`
+	Tradeoffs    []string             `json:"tradeoffs,omitempty"`
+	StillValid   bool                 `json:"still_valid"`
 }
 
 type decisionContextResponse struct {
@@ -463,10 +518,13 @@ type taskModuleContext struct {
 }
 
 type stalenessInfo struct {
-	LastIndexedAt *time.Time `json:"last_indexed_at,omitempty"`
-	IndexedCommit *string    `json:"indexed_commit,omitempty"`
-	HeadCommit    *string    `json:"head_commit,omitempty"`
-	CommitsBehind *int       `json:"commits_behind,omitempty"`
+	LastIndexedAt       *time.Time `json:"last_indexed_at,omitempty"`
+	IndexedCommit       *string    `json:"indexed_commit,omitempty"`
+	HeadCommit          *string    `json:"head_commit,omitempty"`
+	CommitsBehind       *int       `json:"commits_behind,omitempty"`
+	Stale               bool       `json:"stale"`
+	Reasons             []string   `json:"reasons,omitempty"`
+	RevalidationBacklog int        `json:"revalidation_backlog"`
 }
 
 type taskContextResponse struct {
@@ -572,16 +630,22 @@ func (s *Server) handleSearch(ctx context.Context, req *gomcp.CallToolRequest, a
 			path = *r.Entity.Path
 		}
 		items = append(items, searchResultItem{
-			Entity:     r.Entity.Name,
-			EntityKind: r.Entity.Kind,
-			Path:       path,
-			Repo:       r.RepoName,
-			Claim:      r.Fact.Claim,
-			Dimension:  r.Fact.Dimension,
-			Category:   r.Fact.Category,
-			Confidence: r.Fact.Confidence,
-			Score:      r.Score,
-			Provenance: r.Fact.Provenance,
+			FactID:          r.Fact.ID.String(),
+			Entity:          r.Entity.Name,
+			EntityKind:      r.Entity.Kind,
+			Path:            path,
+			Repo:            r.RepoName,
+			Claim:           r.Fact.Claim,
+			Dimension:       r.Fact.Dimension,
+			Category:        r.Fact.Category,
+			Confidence:      r.Fact.Confidence,
+			Score:           r.Score,
+			Provenance:      r.Fact.Provenance,
+			Stale:           r.Stale,
+			StaleReasons:    r.StaleReasons,
+			CommitsBehind:   r.CommitsBehind,
+			Flagged:         r.Flagged,
+			PendingFeedback: r.PendingFeedback,
 		})
 	}
 
@@ -890,10 +954,10 @@ func (s *Server) handleGetImpactAnalysis(ctx context.Context, req *gomcp.CallToo
 
 	// Use N-hop traversal
 	opts := models.TraversalOptions{
-		MaxHops:     maxHops,
-		RelKinds:    args.RelKinds,
-		MaxEntities: limit,
-		CrossRepo:   true,
+		MaxHops:       maxHops,
+		RelKinds:      args.RelKinds,
+		MaxEntities:   limit,
+		CrossRepo:     true,
 		MinConfidence: args.MinConfidence,
 	}
 	subgraph, err := relStore.TraverseFromEntity(ctx, entity.ID, opts)
@@ -1402,6 +1466,10 @@ func (s *Server) handleGetTaskContext(ctx context.Context, req *gomcp.CallToolRe
 		LastIndexedAt: repo.LastIndexedAt,
 		IndexedCommit: repo.LastCommitSHA,
 	}
+	repoStaleness := models.ComputeRepoStaleness(ctx, *repo)
+	staleness.Stale = repoStaleness.Stale
+	staleness.Reasons = repoStaleness.Reasons
+	staleness.CommitsBehind = repoStaleness.CommitsBehind
 
 	// Try to compute commit distance from git if repo path is accessible
 	if repo.LocalPath != "" && repo.LastCommitSHA != nil {
@@ -1421,6 +1489,10 @@ func (s *Server) handleGetTaskContext(ctx context.Context, req *gomcp.CallToolRe
 			}
 		}
 	}
+	_ = s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM extraction_jobs WHERE repo_id = $1 AND status IN ('pending', 'failed')`,
+		repo.ID,
+	).Scan(&staleness.RevalidationBacklog)
 
 	resp := taskContextResponse{
 		Repo:        repo.Name,
@@ -1715,12 +1787,12 @@ func jsonResult(v any) *gomcp.CallToolResult {
 // ── search_entities handler ──────────────────────────────────────────────────
 
 type entityResultItem struct {
-	Name          string   `json:"name"`
-	QualifiedName string   `json:"qualified_name"`
-	Kind          string   `json:"kind"`
-	Path          string   `json:"path,omitempty"`
-	Summary       string   `json:"summary,omitempty"`
-	Repo          string   `json:"repo,omitempty"`
+	Name          string `json:"name"`
+	QualifiedName string `json:"qualified_name"`
+	Kind          string `json:"kind"`
+	Path          string `json:"path,omitempty"`
+	Summary       string `json:"summary,omitempty"`
+	Repo          string `json:"repo,omitempty"`
 }
 
 func (s *Server) handleSearchEntities(ctx context.Context, _ *gomcp.CallToolRequest, params searchEntitiesInput) (*gomcp.CallToolResult, any, error) {
@@ -1837,6 +1909,92 @@ func (s *Server) handleGetEntitySource(ctx context.Context, _ *gomcp.CallToolReq
 	}
 	out := response{Path: params.Path, Content: string(content)}
 	return jsonResult(out), nil, nil
+}
+
+func (s *Server) handleSubmitFactFeedback(ctx context.Context, _ *gomcp.CallToolRequest, params submitFactFeedbackInput) (*gomcp.CallToolResult, any, error) {
+	if strings.TrimSpace(params.FactID) == "" {
+		return errorResult("fact_id is required"), nil, nil
+	}
+	if strings.TrimSpace(params.Reason) == "" {
+		return errorResult("reason is required"), nil, nil
+	}
+	factID, err := uuid.Parse(params.FactID)
+	if err != nil {
+		return errorResult("fact_id must be a valid UUID"), nil, nil
+	}
+
+	factStore := &models.FactStore{Pool: s.pool}
+	fact, err := factStore.GetByID(ctx, factID)
+	if err != nil {
+		return errorResult(fmt.Sprintf("loading fact: %v", err)), nil, nil
+	}
+	if fact == nil {
+		return errorResult("fact not found"), nil, nil
+	}
+
+	var correction *string
+	if c := strings.TrimSpace(params.Correction); c != "" {
+		correction = &c
+	}
+	fbStore := &models.FactFeedbackStore{Pool: s.pool}
+	fb := &models.FactFeedback{
+		FactID:     fact.ID,
+		RepoID:     fact.RepoID,
+		Reason:     strings.TrimSpace(params.Reason),
+		Correction: correction,
+		Status:     models.FeedbackPending,
+	}
+	if err := fbStore.Create(ctx, fb); err != nil {
+		return errorResult(fmt.Sprintf("creating feedback: %v", err)), nil, nil
+	}
+	if err := factStore.UpdateConfidence(ctx, fact.ID, models.ConfidenceLow); err != nil {
+		return errorResult(fmt.Sprintf("lowering fact confidence: %v", err)), nil, nil
+	}
+
+	queuedTargets := queueReanalysisTargets(ctx, s.pool, *fact)
+	type response struct {
+		Status        string   `json:"status"`
+		FeedbackID    string   `json:"feedback_id"`
+		FactID        string   `json:"fact_id"`
+		QueuedTargets []string `json:"queued_targets,omitempty"`
+	}
+	return jsonResult(response{
+		Status:        "submitted",
+		FeedbackID:    fb.ID.String(),
+		FactID:        fact.ID.String(),
+		QueuedTargets: queuedTargets,
+	}), nil, nil
+}
+
+func queueReanalysisTargets(ctx context.Context, pool *pgxpool.Pool, fact models.Fact) []string {
+	jobStore := &models.JobStore{Pool: pool}
+	seen := map[string]bool{}
+	var queued []string
+
+	for _, prov := range fact.Provenance {
+		target := strings.TrimSpace(prov.Ref)
+		if target == "" || seen[target] {
+			continue
+		}
+		seen[target] = true
+
+		existing, _ := jobStore.GetByTarget(ctx, fact.RepoID, models.PhasePhase2, target)
+		if existing != nil {
+			_, _ = pool.Exec(ctx,
+				`UPDATE extraction_jobs SET status = 'pending', error_message = NULL, started_at = NULL, completed_at = NULL, updated_at = now()
+				 WHERE id = $1`, existing.ID)
+			queued = append(queued, target)
+			continue
+		}
+		_ = jobStore.Create(ctx, &models.ExtractionJob{
+			RepoID: fact.RepoID,
+			Phase:  models.PhasePhase2,
+			Target: target,
+			Status: models.JobPending,
+		})
+		queued = append(queued, target)
+	}
+	return queued
 }
 
 func errorResult(msg string) *gomcp.CallToolResult {

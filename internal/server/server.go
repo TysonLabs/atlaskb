@@ -48,6 +48,7 @@ func (s *Server) buildRouter() chi.Router {
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", s.handleHealth)
+		r.Get("/metrics", s.handleMetrics)
 
 		r.Get("/stats", s.handleStats)
 		r.Get("/stats/recent-runs", s.handleRecentRuns)
@@ -87,6 +88,9 @@ func (s *Server) buildRouter() chi.Router {
 
 		r.Post("/ask", s.handleAsk)
 		r.Get("/search", s.handleSearch)
+		r.Get("/feedback", s.handleListFeedback)
+		r.Post("/feedback", s.handleCreateFeedback)
+		r.Post("/feedback/{id}/resolve", s.handleResolveFeedback)
 
 		r.Get("/file", s.handleReadFile)
 

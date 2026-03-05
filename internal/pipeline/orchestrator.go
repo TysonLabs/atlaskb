@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	ghpkg "github.com/tgeorge06/atlaskb/internal/github"
 	"github.com/tgeorge06/atlaskb/internal/llm"
 	"github.com/tgeorge06/atlaskb/internal/models"
+	"github.com/tgeorge06/atlaskb/internal/telemetry"
 )
 
 type OrchestratorConfig struct {
@@ -30,9 +32,10 @@ type OrchestratorConfig struct {
 	Embedder          embeddings.Client
 	Verbose           bool
 	GitLogLimit       int
-	Phases            []string // If non-empty, only run these phases (e.g. ["phase4"])
+	Phases            []string         // If non-empty, only run these phases (e.g. ["phase4"])
 	ProgressFunc      func(msg string) // Optional callback for progress updates
-	GlobalExcludeDirs []string // Global dirs to exclude (from config)
+	GlobalExcludeDirs []string         // Global dirs to exclude (from config)
+	CLIExcludes       []string         // CLI overrides from `atlaskb index --exclude`
 	GitHubClient      *ghpkg.Client    // nil if no GitHub token configured
 	GitHubMaxPRs      int
 	GitHubPRBatchSize int
@@ -45,14 +48,14 @@ func (cfg *OrchestratorConfig) progress(msg string) {
 }
 
 type OrchestratorResult struct {
-	RepoID          uuid.UUID
-	RepoName        string
-	Phase2Stats     *Phase2Stats
-	QualityScore    *QualityScore
-	CostEstimate    CostEstimate
-	TotalTokens     int
-	TotalCostUSD    float64
-	Duration        time.Duration
+	RepoID       uuid.UUID
+	RepoName     string
+	Phase2Stats  *Phase2Stats
+	QualityScore *QualityScore
+	CostEstimate CostEstimate
+	TotalTokens  int
+	TotalCostUSD float64
+	Duration     time.Duration
 }
 
 // shouldRunPhase checks if a phase should be run given the Phases filter.
@@ -157,15 +160,21 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		log.Println("[force] Done, re-extracting from scratch")
 	}
 
-	// Merge global + per-repo exclude dirs
-	excludeDirs := mergeExcludeDirs(cfg.GlobalExcludeDirs, repo.ExcludeDirs)
+	exclusions, err := BuildExclusionSet(repoInfo.RootPath, cfg.GlobalExcludeDirs, repo.ExcludeDirs, cfg.CLIExcludes)
+	if err != nil {
+		return nil, fmt.Errorf("building exclusion set: %w", err)
+	}
+	if cfg.Verbose && len(exclusions.Effective) > 0 {
+		fmt.Printf("Exclusions: %s\n\n", strings.Join(exclusions.Effective, ", "))
+	}
 
 	// Phase 1: Structural inventory (always runs unless phases filter excludes it)
 	var manifest *Manifest
 	if shouldRunPhase(cfg.Phases, "phase1") || len(cfg.Phases) == 0 {
+		phaseStart := time.Now()
 		fmt.Println("Phase 1: Structural inventory...")
 		cfg.progress("Phase 1: Structural inventory...")
-		manifest, err = RunPhase1(repoInfo.RootPath, excludeDirs)
+		manifest, err = RunPhase1(repoInfo.RootPath, exclusions)
 		if err != nil {
 			return nil, fmt.Errorf("phase 1: %w", err)
 		}
@@ -304,14 +313,16 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 				cfg.progress(fmt.Sprintf("Cross-repo: discovered %d links", crossCreated))
 			}
 		}
+		telemetry.ObserveDuration("pipeline_phase1_duration_ms", time.Since(phaseStart))
 	}
 
 	// Phase 1.5: Ctags structural extraction (provides ground-truth entity names)
 	var entityRoster []EntityEntry
 	if shouldRunPhase(cfg.Phases, "phase1.5") || shouldRunPhase(cfg.Phases, "phase2") || len(cfg.Phases) == 0 {
+		phaseStart := time.Now()
 		fmt.Println("Phase 1.5: Extracting structural symbols...")
 		cfg.progress("Phase 1.5: Extracting structural symbols...")
-		symbols, ctagsErr := RunCtags(cfg.RepoPath)
+		symbols, ctagsErr := RunCtags(cfg.RepoPath, exclusions)
 		if ctagsErr != nil {
 			fmt.Printf("  Warning: ctags extraction failed: %v\n", ctagsErr)
 		} else if symbols == nil {
@@ -320,6 +331,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 			entityRoster = BuildEntityRoster(symbols)
 			fmt.Printf("  Discovered %d symbols across %d files\n", len(entityRoster), len(symbols))
 		}
+		telemetry.ObserveDuration("pipeline_phase1_5_duration_ms", time.Since(phaseStart))
 	}
 
 	// Phase 1.6: Import parsing (deterministic, no LLM)
@@ -338,6 +350,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 
 	// Phase 1.7: Tree-sitter structural extraction
 	if (shouldRunPhase(cfg.Phases, "phase1.7") || len(cfg.Phases) == 0) && len(entityRoster) > 0 && manifest != nil {
+		phaseStart := time.Now()
 		fmt.Println("Phase 1.7: Tree-sitter structural extraction...")
 		cfg.progress("Phase 1.7: Tree-sitter call graph extraction...")
 		ts17Stats, tsErr := RunPhase17(ctx, Phase17Config{
@@ -354,6 +367,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 			fmt.Printf("  Tree-sitter: %d files, %d calls resolved, %d inheritance links\n",
 				ts17Stats.FilesProcessed, ts17Stats.CallsResolved, ts17Stats.InheritanceFound)
 		}
+		telemetry.ObserveDuration("pipeline_phase1_7_duration_ms", time.Since(phaseStart))
 	}
 
 	if cfg.DryRun {
@@ -382,9 +396,10 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 
 	// Phase 2: File analysis
 	if shouldRunPhase(cfg.Phases, "phase2") {
+		phaseStart := time.Now()
 		if manifest == nil {
 			// Need manifest for phase2 even if phase1 was skipped
-			manifest, err = RunPhase1(repoInfo.RootPath, excludeDirs)
+			manifest, err = RunPhase1(repoInfo.RootPath, exclusions)
 			if err != nil {
 				return nil, fmt.Errorf("phase 1 (for phase 2): %w", err)
 			}
@@ -418,10 +433,13 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		indexingRun.FilesSkipped = models.Ptr(phase2Stats.FilesSkipped)
 		indexingRun.EntitiesCreated = models.Ptr(phase2Stats.EntitiesCreated)
 		indexingRun.FactsCreated = models.Ptr(phase2Stats.FactsCreated)
+		indexingRun.ParseFallbacks = models.Ptr(phase2Stats.ParseFallbacks)
+		indexingRun.UnresolvedRefs = models.Ptr(phase2Stats.UnresolvedRefs)
 
 		if phase2Stats.FilesProcessed > 0 {
 			phase2Processed = true
 		}
+		telemetry.ObserveDuration("pipeline_phase2_duration_ms", time.Since(phaseStart))
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -442,6 +460,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 
 	// Phase 2.5: Backfill orphan entities (entities with no facts)
 	if shouldRunPhase(cfg.Phases, "backfill") || shouldRunPhase(cfg.Phases, "phase2") {
+		phaseStart := time.Now()
 		fmt.Println("Phase 2.5: Backfill orphan entities...")
 		cfg.progress("Phase 2.5: Backfilling orphan entities...")
 		backfillStats, err := RunBackfill(ctx, BackfillConfig{
@@ -465,6 +484,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		} else {
 			fmt.Println("  No orphan entities found.")
 		}
+		telemetry.ObserveDuration("pipeline_phase2_5_duration_ms", time.Since(phaseStart))
 	}
 
 	// Phase 2.7: Execution flow detection
@@ -513,6 +533,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 
 	// Phase 3: GitHub PR/issue mining
 	if shouldRunPhase(cfg.Phases, "phase3") || len(cfg.Phases) == 0 {
+		phaseStart := time.Now()
 		fmt.Println("Phase 3: GitHub PR/issue mining...")
 		cfg.progress("Phase 3: GitHub PR/issue mining...")
 
@@ -535,6 +556,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		}); err != nil {
 			fmt.Printf("  Warning: Phase 3 GitHub PR mining failed: %v\n", err)
 		}
+		telemetry.ObserveDuration("pipeline_phase3_duration_ms", time.Since(phaseStart))
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -544,6 +566,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 
 	// Phase 4: Cross-module synthesis
 	if shouldRunPhase(cfg.Phases, "phase4") {
+		phaseStart := time.Now()
 		// If re-running phase4, reset the existing job so it can re-run
 		if len(cfg.Phases) > 0 {
 			jobStore := &models.JobStore{Pool: cfg.Pool}
@@ -566,6 +589,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		}); err != nil {
 			fmt.Printf("  Warning: phase 4 synthesis failed: %v\n", err)
 		}
+		telemetry.ObserveDuration("pipeline_phase4_duration_ms", time.Since(phaseStart))
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -575,6 +599,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 
 	// Phase 5: Repo summary
 	if shouldRunPhase(cfg.Phases, "phase5") {
+		phaseStart := time.Now()
 		// If re-running phase5, reset the existing job
 		if len(cfg.Phases) > 0 {
 			jobStore := &models.JobStore{Pool: cfg.Pool}
@@ -596,10 +621,12 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 		}); err != nil {
 			fmt.Printf("  Warning: phase 5 summary failed: %v\n", err)
 		}
+		telemetry.ObserveDuration("pipeline_phase5_duration_ms", time.Since(phaseStart))
 	}
 
 	// Phase 6: Functional clustering
 	if shouldRunPhase(cfg.Phases, "phase6") || len(cfg.Phases) == 0 {
+		phaseStart := time.Now()
 		// Reset job if re-running
 		if len(cfg.Phases) > 0 {
 			jobStore := &models.JobStore{Pool: cfg.Pool}
@@ -620,6 +647,7 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 			fmt.Printf("  Found %d clusters (modularity=%.3f) across %d entities\n",
 				phase6Stats.ClustersFound, phase6Stats.Modularity, phase6Stats.EntitiesInGraph)
 		}
+		telemetry.ObserveDuration("pipeline_phase6_duration_ms", time.Since(phaseStart))
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -629,11 +657,13 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 
 	// Generate embeddings for all facts
 	if shouldRunPhase(cfg.Phases, "embedding") || len(cfg.Phases) == 0 {
+		phaseStart := time.Now()
 		fmt.Println("Generating embeddings...")
 		cfg.progress("Generating embeddings...")
 		if err := generateEmbeddings(ctx, cfg.Pool, cfg.Embedder, repo.ID); err != nil {
 			fmt.Printf("  Warning: embedding generation failed: %v\n", err)
 		}
+		telemetry.ObserveDuration("pipeline_embedding_duration_ms", time.Since(phaseStart))
 	}
 
 	// Compute quality score
@@ -671,6 +701,17 @@ func Orchestrate(ctx context.Context, cfg OrchestratorConfig) (*OrchestratorResu
 
 	// Update repo record
 	repoStore.UpdateLastIndexed(ctx, repo.ID, repoInfo.HeadCommitSHA)
+
+	// Process pending feedback for this repo: mark as resolved with run outcome.
+	fbStore := &models.FactFeedbackStore{Pool: cfg.Pool}
+	if pendingFeedback, err := fbStore.ListPendingByRepo(ctx, repo.ID); err == nil && len(pendingFeedback) > 0 {
+		outcome := fmt.Sprintf("revalidated in indexing run %s at %s", indexingRun.ID.String(), time.Now().UTC().Format(time.RFC3339))
+		for _, fb := range pendingFeedback {
+			out := outcome
+			_ = fbStore.Resolve(ctx, fb.ID, &out)
+		}
+		telemetry.AddCounter("feedback_revalidated_total", int64(len(pendingFeedback)))
+	}
 
 	result.Duration = time.Since(start)
 	indexingRun.DurationMS = models.Ptr(result.Duration.Milliseconds())
@@ -774,24 +815,6 @@ func extractRepoName(info *gitpkg.RepoInfo) string {
 		return parts[len(parts)-1]
 	}
 	return "unknown"
-}
-
-func mergeExcludeDirs(global, perRepo []string) []string {
-	seen := make(map[string]bool)
-	var merged []string
-	for _, d := range global {
-		if !seen[d] {
-			seen[d] = true
-			merged = append(merged, d)
-		}
-	}
-	for _, d := range perRepo {
-		if !seen[d] {
-			seen[d] = true
-			merged = append(merged, d)
-		}
-	}
-	return merged
 }
 
 func splitPath(path string) []string {
