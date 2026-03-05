@@ -149,7 +149,28 @@ make build-full
 
 `make build-full` builds web assets first, then the Go binary.
 
-### Option C: Docker Compose (Fast Local Bring-Up)
+### Option C: Install Script (curl / PowerShell)
+
+Linux/macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tgeorge06/atlaskb/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/tgeorge06/atlaskb/main/install.ps1 | iex
+```
+
+Scoop (Windows):
+
+```powershell
+scoop bucket add atlaskb https://github.com/tgeorge06/scoop-atlaskb
+scoop install atlaskb
+```
+
+### Option D: Docker Compose (Fast Local Bring-Up)
 
 ```bash
 docker compose up --build
@@ -657,6 +678,13 @@ Formula generation script:
 Release automation workflow:
 
 - [`.github/workflows/release-homebrew-tap.yml`](.github/workflows/release-homebrew-tap.yml)
+- [`.github/workflows/release.yml`](.github/workflows/release.yml) (cross-platform release tarballs + checksums + scoop update)
+
+Install/packaging scripts:
+
+- [`install.sh`](install.sh)
+- [`install.ps1`](install.ps1)
+- [`scripts/generate-scoop-manifest.sh`](scripts/generate-scoop-manifest.sh)
 
 How release automation works:
 
@@ -667,11 +695,14 @@ How release automation works:
 Required repo secret:
 
 - `HOMEBREW_TAP_TOKEN` (must push to tap repository)
+- `SCOOP_BUCKET_TOKEN` (must push to scoop bucket repository)
 
 Optional repo variables:
 
 - `HOMEBREW_TAP_REPO` (defaults to `<owner>/homebrew-atlaskb`)
 - `HOMEBREW_SOURCE_REPO` (defaults to `https://github.com/<owner>/<repo>.git`)
+- `SCOOP_BUCKET_REPO` (defaults to `<owner>/scoop-atlaskb`)
+- `SCOOP_SOURCE_REPO` (defaults to current source repository)
 
 ## Development
 

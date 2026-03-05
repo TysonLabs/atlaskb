@@ -1,0 +1,194 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            artifact: atlaskb-linux-x86_64
+            ext: ""
+            goos: linux
+            goarch: amd64
+          - os: ubuntu-22.04
+            artifact: atlaskb-linux-aarch64
+            ext: ""
+            goos: linux
+            goarch: arm64
+          - os: macos-13
+            artifact: atlaskb-macos-x86_64
+            ext: ""
+            goos: darwin
+            goarch: amd64
+          - os: macos-14
+            artifact: atlaskb-macos-aarch64
+            ext: ""
+            goos: darwin
+            goarch: arm64
+          - os: windows-latest
+            artifact: atlaskb-windows-x86_64
+            ext: ".exe"
+            goos: windows
+            goarch: amd64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend assets
+        run: |
+          set -euo pipefail
+          npm ci --prefix web
+          npm run build --prefix web
+
+      - name: Build binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist pkg
+          VERSION="${GITHUB_REF_NAME#v}"
+          GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" CGO_ENABLED=0 \
+            go build -ldflags "-s -w -X github.com/tgeorge06/atlaskb/internal/version.Version=${VERSION}" -o "dist/atlaskb${{ matrix.ext }}" ./cmd/atlaskb
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          cp "dist/atlaskb${{ matrix.ext }}" pkg/
+          cp README.md pkg/
+          if [[ -f LICENSE ]]; then
+            cp LICENSE pkg/
+          fi
+          tar czf "${{ matrix.artifact }}.tar.gz" -C pkg .
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item "dist/atlaskb.exe" "pkg/atlaskb.exe"
+          Copy-Item "README.md" "pkg/README.md"
+          if (Test-Path "LICENSE") {
+            Copy-Item "LICENSE" "pkg/LICENSE"
+          }
+          tar -czf "${{ matrix.artifact }}.tar.gz" -C pkg .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: sha256sum *.tar.gz > checksums.sha256
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.tar.gz
+            checksums.sha256
+          generate_release_notes: true
+
+  update-scoop:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+
+      - name: Resolve metadata
+        id: meta
+        env:
+          SCOOP_BUCKET_REPO: ${{ vars.SCOOP_BUCKET_REPO }}
+          SCOOP_SOURCE_REPO: ${{ vars.SCOOP_SOURCE_REPO }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          BUCKET_REPO="${SCOOP_BUCKET_REPO:-${GITHUB_REPOSITORY_OWNER}/scoop-atlaskb}"
+          SOURCE_REPO="${SCOOP_SOURCE_REPO:-${GITHUB_REPOSITORY}}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "bucket_repo=${BUCKET_REPO}" >> "$GITHUB_OUTPUT"
+          echo "source_repo=${SOURCE_REPO}" >> "$GITHUB_OUTPUT"
+
+      - name: Download Windows tarball
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          gh release download "${GITHUB_REF_NAME}" \
+            --repo "${{ steps.meta.outputs.source_repo }}" \
+            --pattern "atlaskb-windows-x86_64.tar.gz" \
+            --dir assets
+
+      - name: Compute SHA256
+        id: hash
+        run: |
+          set -euo pipefail
+          echo "windows_x86_64=$(sha256sum assets/atlaskb-windows-x86_64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Scoop manifest
+        run: |
+          set -euo pipefail
+          bash scripts/generate-scoop-manifest.sh \
+            --version "${{ steps.meta.outputs.version }}" \
+            --hash "${{ steps.hash.outputs.windows_x86_64 }}" \
+            --repo "${{ steps.meta.outputs.source_repo }}" \
+            --output /tmp/atlaskb.json
+
+      - name: Checkout Scoop bucket
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.meta.outputs.bucket_repo }}
+          token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          path: bucket
+          fetch-depth: 0
+
+      - name: Commit and push Scoop update
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          cp /tmp/atlaskb.json bucket/atlaskb.json
+          cd bucket
+          git add atlaskb.json
+          if git diff --cached --quiet; then
+            echo "No scoop manifest changes detected."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "atlaskb v${VERSION}"
+          git push origin HEAD:main
