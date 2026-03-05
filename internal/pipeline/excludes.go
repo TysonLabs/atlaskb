@@ -26,9 +26,9 @@ type ExclusionSet struct {
 
 // BuildExclusionSet composes exclusion inputs and loads .atlaskbignore from repoPath.
 func BuildExclusionSet(repoPath string, global, perRepo, cli []string) (*ExclusionSet, error) {
-	global = normalizeExcludePatterns(global)
-	perRepo = normalizeExcludePatterns(perRepo)
-	cli = normalizeExcludePatterns(cli)
+	global = normalizeMatcherPatterns(global)
+	perRepo = normalizeMatcherPatterns(perRepo)
+	cli = normalizeMatcherPatterns(cli)
 
 	ignorePatterns, err := loadAtlasIgnorePatterns(repoPath)
 	if err != nil {
@@ -81,10 +81,10 @@ func loadAtlasIgnorePatterns(repoPath string) ([]string, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("reading .atlaskbignore: %w", err)
 	}
-	return dedupeNonEmpty(normalizeExcludePatterns(patterns)), nil
+	return dedupeNonEmpty(normalizeMatcherPatterns(patterns)), nil
 }
 
-func normalizeExcludePatterns(patterns []string) []string {
+func normalizeMatcherPatterns(patterns []string) []string {
 	out := make([]string, 0, len(patterns))
 	for _, raw := range patterns {
 		p := strings.TrimSpace(raw)
@@ -93,9 +93,7 @@ func normalizeExcludePatterns(patterns []string) []string {
 		}
 		p = filepath.ToSlash(p)
 		p = strings.TrimPrefix(p, "./")
-		p = strings.TrimPrefix(p, "/")
-		p = strings.TrimSuffix(p, "/")
-		if p == "" || p == "." {
+		if p == "." {
 			continue
 		}
 		out = append(out, p)
@@ -121,10 +119,17 @@ func collectDirectoryPrefixes(groups ...[]string) []string {
 	for _, group := range groups {
 		for _, p := range group {
 			// Treat plain paths as directory prefixes; patterns with glob chars stay matcher-only.
-			if strings.ContainsAny(p, "*?[]!") {
+			if strings.ContainsAny(p, "*?[]!") || strings.HasPrefix(p, "!") {
 				continue
 			}
-			dirs = append(dirs, p)
+			cp := filepath.ToSlash(strings.TrimSpace(p))
+			cp = strings.TrimPrefix(cp, "./")
+			cp = strings.TrimPrefix(cp, "/")
+			cp = strings.TrimSuffix(cp, "/")
+			if cp == "" || cp == "." {
+				continue
+			}
+			dirs = append(dirs, cp)
 		}
 	}
 	dirs = dedupeNonEmpty(dirs)

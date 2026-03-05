@@ -32,3 +32,30 @@ func TestWriteJSONWithETag_ReturnsNotModifiedWhenIfNoneMatchMatches(t *testing.T
 		t.Fatalf("expected empty body for 304 response")
 	}
 }
+
+func TestWriteJSONWithETag_ReturnsNotModifiedForIfNoneMatchList(t *testing.T) {
+	req1 := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	rec1 := httptest.NewRecorder()
+	payload := map[string]any{"ok": true}
+	writeJSONWithETag(rec1, req1, http.StatusOK, payload)
+	etag := rec1.Header().Get("ETag")
+
+	req2 := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	req2.Header.Set("If-None-Match", `"bogus", `+etag)
+	rec2 := httptest.NewRecorder()
+	writeJSONWithETag(rec2, req2, http.StatusOK, payload)
+
+	if rec2.Code != http.StatusNotModified {
+		t.Fatalf("response status = %d, want %d", rec2.Code, http.StatusNotModified)
+	}
+}
+
+func TestWriteJSONWithETag_ReturnsNotModifiedForWildcard(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	req.Header.Set("If-None-Match", "*")
+	rec := httptest.NewRecorder()
+	writeJSONWithETag(rec, req, http.StatusOK, map[string]any{"ok": true})
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("response status = %d, want %d", rec.Code, http.StatusNotModified)
+	}
+}

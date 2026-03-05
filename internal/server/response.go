@@ -40,13 +40,34 @@ func writeJSONWithETag(w http.ResponseWriter, r *http.Request, status int, v any
 
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
-	if inm := strings.TrimSpace(r.Header.Get("If-None-Match")); inm != "" && inm == etag {
+	if inm := strings.TrimSpace(r.Header.Get("If-None-Match")); inm != "" && etagMatches(inm, etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(data)
+}
+
+func etagMatches(ifNoneMatchHeader, currentETag string) bool {
+	if strings.TrimSpace(ifNoneMatchHeader) == "*" {
+		return true
+	}
+	cur := normalizeETag(currentETag)
+	for _, part := range strings.Split(ifNoneMatchHeader, ",") {
+		if normalizeETag(part) == cur {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeETag(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, "W/")
+	v = strings.TrimSpace(v)
+	v = strings.Trim(v, "\"")
+	return v
 }
 
 func writeError(w http.ResponseWriter, err error) {

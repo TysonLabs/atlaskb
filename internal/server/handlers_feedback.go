@@ -1,14 +1,12 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/tgeorge06/atlaskb/internal/models"
 )
 
@@ -45,28 +43,16 @@ func (s *Server) handleCreateFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fb := &models.FactFeedback{
-		FactID:     fact.ID,
-		RepoID:     fact.RepoID,
-		Reason:     strings.TrimSpace(req.Reason),
-		Correction: req.Correction,
-		Status:     models.FeedbackPending,
-	}
-	fbStore := &models.FactFeedbackStore{Pool: s.pool}
-	if err := fbStore.Create(r.Context(), fb); err != nil {
-		writeError(w, NewInternal("creating feedback: "+err.Error()))
+	submission, err := models.SubmitFactFeedback(r.Context(), s.pool, fact, req.Reason, req.Correction)
+	if err != nil {
+		writeError(w, NewInternal("submitting feedback: "+err.Error()))
 		return
 	}
-	if err := factStore.UpdateConfidence(r.Context(), fact.ID, models.ConfidenceLow); err != nil {
-		writeError(w, NewInternal("lowering fact confidence: "+err.Error()))
-		return
-	}
-	queued := queueReanalysisTargetsServer(r.Context(), s.pool, *fact)
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"id":             fb.ID,
-		"status":         fb.Status,
-		"fact_id":        fb.FactID,
-		"queued_targets": queued,
+		"id":             submission.Feedback.ID,
+		"status":         submission.Feedback.Status,
+		"fact_id":        submission.Feedback.FactID,
+		"queued_targets": submission.QueuedTargets,
 	})
 }
 
@@ -119,35 +105,4 @@ func (s *Server) handleResolveFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": models.FeedbackResolved})
-}
-
-func queueReanalysisTargetsServer(ctx context.Context, pool *pgxpool.Pool, fact models.Fact) []string {
-	jobStore := &models.JobStore{Pool: pool}
-	seen := map[string]bool{}
-	var queued []string
-
-	for _, prov := range fact.Provenance {
-		target := strings.TrimSpace(prov.Ref)
-		if target == "" || seen[target] {
-			continue
-		}
-		seen[target] = true
-
-		existing, _ := jobStore.GetByTarget(ctx, fact.RepoID, models.PhasePhase2, target)
-		if existing != nil {
-			_, _ = pool.Exec(ctx,
-				`UPDATE extraction_jobs SET status = 'pending', error_message = NULL, started_at = NULL, completed_at = NULL, updated_at = now()
-				 WHERE id = $1`, existing.ID)
-			queued = append(queued, target)
-			continue
-		}
-		_ = jobStore.Create(ctx, &models.ExtractionJob{
-			RepoID: fact.RepoID,
-			Phase:  models.PhasePhase2,
-			Target: target,
-			Status: models.JobPending,
-		})
-		queued = append(queued, target)
-	}
-	return queued
 }

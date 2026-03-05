@@ -41,3 +41,22 @@ func TestBuildExclusionSet_PrecedenceAndIgnoreFile(t *testing.T) {
 		t.Fatalf("non-matching path should not be excluded")
 	}
 }
+
+func TestBuildExclusionSet_AnchoredDirectoryPattern(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".atlaskbignore"), []byte("/build/\n"), 0o644); err != nil {
+		t.Fatalf("write .atlaskbignore: %v", err)
+	}
+
+	set, err := BuildExclusionSet(dir, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildExclusionSet() error = %v", err)
+	}
+
+	if !set.ShouldExclude("build/out.txt", false) {
+		t.Fatalf("expected root build/ to be excluded")
+	}
+	if set.ShouldExclude("src/build/out.txt", false) {
+		t.Fatalf("expected anchored /build/ pattern not to exclude src/build")
+	}
+}

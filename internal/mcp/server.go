@@ -1936,22 +1936,10 @@ func (s *Server) handleSubmitFactFeedback(ctx context.Context, _ *gomcp.CallTool
 	if c := strings.TrimSpace(params.Correction); c != "" {
 		correction = &c
 	}
-	fbStore := &models.FactFeedbackStore{Pool: s.pool}
-	fb := &models.FactFeedback{
-		FactID:     fact.ID,
-		RepoID:     fact.RepoID,
-		Reason:     strings.TrimSpace(params.Reason),
-		Correction: correction,
-		Status:     models.FeedbackPending,
+	submission, err := models.SubmitFactFeedback(ctx, s.pool, fact, params.Reason, correction)
+	if err != nil {
+		return errorResult(fmt.Sprintf("submitting feedback: %v", err)), nil, nil
 	}
-	if err := fbStore.Create(ctx, fb); err != nil {
-		return errorResult(fmt.Sprintf("creating feedback: %v", err)), nil, nil
-	}
-	if err := factStore.UpdateConfidence(ctx, fact.ID, models.ConfidenceLow); err != nil {
-		return errorResult(fmt.Sprintf("lowering fact confidence: %v", err)), nil, nil
-	}
-
-	queuedTargets := queueReanalysisTargets(ctx, s.pool, *fact)
 	type response struct {
 		Status        string   `json:"status"`
 		FeedbackID    string   `json:"feedback_id"`
@@ -1960,41 +1948,10 @@ func (s *Server) handleSubmitFactFeedback(ctx context.Context, _ *gomcp.CallTool
 	}
 	return jsonResult(response{
 		Status:        "submitted",
-		FeedbackID:    fb.ID.String(),
-		FactID:        fact.ID.String(),
-		QueuedTargets: queuedTargets,
+		FeedbackID:    submission.Feedback.ID.String(),
+		FactID:        submission.Feedback.FactID.String(),
+		QueuedTargets: submission.QueuedTargets,
 	}), nil, nil
-}
-
-func queueReanalysisTargets(ctx context.Context, pool *pgxpool.Pool, fact models.Fact) []string {
-	jobStore := &models.JobStore{Pool: pool}
-	seen := map[string]bool{}
-	var queued []string
-
-	for _, prov := range fact.Provenance {
-		target := strings.TrimSpace(prov.Ref)
-		if target == "" || seen[target] {
-			continue
-		}
-		seen[target] = true
-
-		existing, _ := jobStore.GetByTarget(ctx, fact.RepoID, models.PhasePhase2, target)
-		if existing != nil {
-			_, _ = pool.Exec(ctx,
-				`UPDATE extraction_jobs SET status = 'pending', error_message = NULL, started_at = NULL, completed_at = NULL, updated_at = now()
-				 WHERE id = $1`, existing.ID)
-			queued = append(queued, target)
-			continue
-		}
-		_ = jobStore.Create(ctx, &models.ExtractionJob{
-			RepoID: fact.RepoID,
-			Phase:  models.PhasePhase2,
-			Target: target,
-			Status: models.JobPending,
-		})
-		queued = append(queued, target)
-	}
-	return queued
 }
 
 func errorResult(msg string) *gomcp.CallToolResult {

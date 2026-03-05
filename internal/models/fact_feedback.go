@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +13,11 @@ import (
 
 type FactFeedbackStore struct {
 	Pool *pgxpool.Pool
+}
+
+type FeedbackSubmissionResult struct {
+	Feedback      FactFeedback
+	QueuedTargets []string
 }
 
 func (s *FactFeedbackStore) Create(ctx context.Context, fb *FactFeedback) error {
@@ -124,4 +130,104 @@ func (s *FactFeedbackStore) GetByID(ctx context.Context, id uuid.UUID) (*FactFee
 		return nil, fmt.Errorf("querying feedback: %w", err)
 	}
 	return &fb, nil
+}
+
+// SubmitFactFeedback stores feedback, lowers fact confidence, and queues
+// provenance targets for phase2 re-analysis in one transaction.
+func SubmitFactFeedback(ctx context.Context, pool *pgxpool.Pool, fact *Fact, reason string, correction *string) (*FeedbackSubmissionResult, error) {
+	if fact == nil {
+		return nil, fmt.Errorf("fact is required")
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return nil, fmt.Errorf("reason is required")
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	fb := FactFeedback{
+		ID:         uuid.New(),
+		FactID:     fact.ID,
+		RepoID:     fact.RepoID,
+		Reason:     reason,
+		Correction: correction,
+		Status:     FeedbackPending,
+		CreatedAt:  time.Now(),
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO fact_feedback (id, fact_id, repo_id, reason, correction, status, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		fb.ID, fb.FactID, fb.RepoID, fb.Reason, fb.Correction, fb.Status, fb.CreatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("insert feedback: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE facts SET confidence = $2, updated_at = now() WHERE id = $1`,
+		fact.ID, ConfidenceLow,
+	); err != nil {
+		return nil, fmt.Errorf("lower fact confidence: %w", err)
+	}
+
+	seen := map[string]bool{}
+	var queued []string
+	for _, prov := range fact.Provenance {
+		target := strings.TrimSpace(prov.Ref)
+		if target == "" || seen[target] {
+			continue
+		}
+		seen[target] = true
+
+		var existingID uuid.UUID
+		var status string
+		err := tx.QueryRow(ctx,
+			`SELECT id, status FROM extraction_jobs WHERE repo_id = $1 AND phase = $2 AND target = $3`,
+			fact.RepoID, PhasePhase2, target,
+		).Scan(&existingID, &status)
+		if err == nil {
+			switch status {
+			case JobInProgress:
+				// Do not reset currently running jobs.
+			case JobPending:
+				queued = append(queued, target)
+			default:
+				tag, updErr := tx.Exec(ctx,
+					`UPDATE extraction_jobs
+					 SET status = 'pending', error_message = NULL, started_at = NULL, completed_at = NULL, updated_at = now()
+					 WHERE id = $1 AND status <> 'in_progress'`,
+					existingID,
+				)
+				if updErr != nil {
+					return nil, fmt.Errorf("reset existing job: %w", updErr)
+				}
+				if tag.RowsAffected() > 0 {
+					queued = append(queued, target)
+				}
+			}
+			continue
+		}
+		if err != pgx.ErrNoRows {
+			return nil, fmt.Errorf("load existing job: %w", err)
+		}
+
+		now := time.Now()
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO extraction_jobs (id, repo_id, phase, target, status, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $6)
+			 ON CONFLICT (repo_id, phase, target) DO NOTHING`,
+			uuid.New(), fact.RepoID, PhasePhase2, target, JobPending, now,
+		); err != nil {
+			return nil, fmt.Errorf("queue reanalysis job: %w", err)
+		}
+		queued = append(queued, target)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit feedback tx: %w", err)
+	}
+	return &FeedbackSubmissionResult{Feedback: fb, QueuedTargets: queued}, nil
 }
