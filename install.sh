@@ -1,11 +1,11 @@
 #!/bin/sh
 # shellcheck disable=SC2059
 # install.sh — Cross-platform installer for atlaskb
-# Usage: curl -fsSL https://raw.githubusercontent.com/tgeorge06/atlaskb/main/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/TysonLabs/atlaskb/main/install.sh | sh
 #        sh install.sh [--prefix <dir>] [--version <tag>] [--dry-run] [--no-prompt]
 set -eu
 
-REPO="tgeorge06/atlaskb"
+REPO="TysonLabs/atlaskb"
 GITHUB_API="https://api.github.com"
 GITHUB_DL="https://github.com"
 
@@ -110,7 +110,7 @@ while [ $# -gt 0 ]; do
 atlaskb installer
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/tgeorge06/atlaskb/main/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/TysonLabs/atlaskb/main/install.sh | sh
   sh install.sh [OPTIONS]
 
 Options:
@@ -164,8 +164,8 @@ detect_platform() {
 	Darwin) PLATFORM="macos" ;;
 	MINGW* | MSYS* | CYGWIN* | Windows_NT)
 		err "Windows detected. Use Scoop instead:
-  scoop bucket add atlaskb https://github.com/tgeorge06/scoop-atlaskb
-  scoop install atlaskb"
+  scoop bucket add tysonlabs https://github.com/TysonLabs/scoop-bucket
+  scoop install tysonlabs/atlaskb"
 		;;
 	*) err "Unsupported OS: $OS" ;;
 	esac

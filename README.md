@@ -112,17 +112,17 @@ Recommended:
 
 ## Install
 
-### Option A: Private Homebrew Tap (macOS)
+### Option A: Homebrew Tap (macOS)
 
 ```bash
-brew tap <owner>/atlaskb https://github.com/<owner>/homebrew-atlaskb.git
-brew install <owner>/atlaskb/atlaskb
+brew tap TysonLabs/tap
+brew install TysonLabs/tap/atlaskb
 ```
 
-Why `brew install <owner>/atlaskb/atlaskb` and not `brew install <owner>/atlaskb`?
+Why `brew install TysonLabs/tap/atlaskb` and not `brew install TysonLabs/tap`?
 
 - Homebrew install syntax is `owner/tap/formula`.
-- Here, tap name is `atlaskb` and formula name is also `atlaskb`, so both segments appear.
+- Here, tap name is `tap` and formula name is `atlaskb`, so both segments appear.
 
 Run as a background service:
 
@@ -141,7 +141,7 @@ brew services stop atlaskb
 ### Option B: Build from Source
 
 ```bash
-git clone https://github.com/tgeorge06/atlaskb.git
+git clone https://github.com/TysonLabs/atlaskb.git
 cd atlaskb
 make build-full
 ./bin/atlaskb version
@@ -154,20 +154,20 @@ make build-full
 Linux/macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tgeorge06/atlaskb/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/TysonLabs/atlaskb/main/install.sh | sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/tgeorge06/atlaskb/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/TysonLabs/atlaskb/main/install.ps1 | iex
 ```
 
 Scoop (Windows):
 
 ```powershell
-scoop bucket add atlaskb https://github.com/tgeorge06/scoop-atlaskb
-scoop install atlaskb
+scoop bucket add tysonlabs https://github.com/TysonLabs/scoop-bucket
+scoop install tysonlabs/atlaskb
 ```
 
 ### Option D: Docker Compose (Fast Local Bring-Up)
@@ -690,7 +690,7 @@ How release automation works:
 
 1. Push tag `v*` in source repo.
 2. Workflow generates `Formula/atlaskb.rb` pinned to tag + revision.
-3. Workflow commits formula update to private tap repo `main`.
+3. Workflow commits formula update to Homebrew tap repo `main`.
 
 Required repo secret:
 
@@ -699,9 +699,9 @@ Required repo secret:
 
 Optional repo variables:
 
-- `HOMEBREW_TAP_REPO` (defaults to `<owner>/homebrew-atlaskb`)
+- `HOMEBREW_TAP_REPO` (defaults to `<owner>/homebrew-tap`)
 - `HOMEBREW_SOURCE_REPO` (defaults to `https://github.com/<owner>/<repo>.git`)
-- `SCOOP_BUCKET_REPO` (defaults to `<owner>/scoop-atlaskb`)
+- `SCOOP_BUCKET_REPO` (defaults to `<owner>/scoop-bucket`)
 - `SCOOP_SOURCE_REPO` (defaults to current source repository)
 
 ## Development
@@ -756,7 +756,7 @@ For Homebrew formula builds, ensure formula runs both web build and Go build (cu
 Use HTTPS for both tap URL and formula source URL:
 
 ```bash
-brew tap <owner>/atlaskb https://github.com/<owner>/homebrew-atlaskb.git
+brew tap TysonLabs/tap
 ```
 
 Generate formula with:

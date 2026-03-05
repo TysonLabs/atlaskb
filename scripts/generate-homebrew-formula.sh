@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
 	cat <<'EOF'
-Generate a Homebrew formula for Atlaskb in a private tap.
+Generate a Homebrew formula for Atlaskb.
 
 Usage:
   scripts/generate-homebrew-formula.sh --tag v0.1.0 [options]
@@ -44,7 +44,7 @@ normalize_repo_url() {
 TAG=""
 REVISION=""
 SOURCE_REPO=""
-HOMEPAGE="https://github.com/tgeorge06/atlaskb"
+HOMEPAGE="https://github.com/TysonLabs/atlaskb"
 DESC="Organizational code knowledge base CLI"
 OUTPUT=""
 

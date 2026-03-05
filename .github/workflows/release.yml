@@ -136,7 +136,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          BUCKET_REPO="${SCOOP_BUCKET_REPO:-${GITHUB_REPOSITORY_OWNER}/scoop-atlaskb}"
+          BUCKET_REPO="${SCOOP_BUCKET_REPO:-${GITHUB_REPOSITORY_OWNER}/scoop-bucket}"
           SOURCE_REPO="${SCOOP_SOURCE_REPO:-${GITHUB_REPOSITORY}}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "bucket_repo=${BUCKET_REPO}" >> "$GITHUB_OUTPUT"

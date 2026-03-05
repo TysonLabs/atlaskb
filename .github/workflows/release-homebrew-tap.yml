@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
-          TAP_REPO="${HOMEBREW_TAP_REPO:-${GITHUB_REPOSITORY_OWNER}/homebrew-atlaskb}"
+          TAP_REPO="${HOMEBREW_TAP_REPO:-${GITHUB_REPOSITORY_OWNER}/homebrew-tap}"
           SOURCE_REPO="${HOMEBREW_SOURCE_REPO:-https://github.com/${GITHUB_REPOSITORY}.git}"
 
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"

@@ -1,5 +1,5 @@
 # install.ps1 — Windows installer for atlaskb
-# Usage: irm https://raw.githubusercontent.com/tgeorge06/atlaskb/main/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/TysonLabs/atlaskb/main/install.ps1 | iex
 #        .\install.ps1 [-Prefix <path>] [-Version <tag>] [-DryRun]
 param(
     [string]$Prefix = "",
@@ -8,7 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Repo = "tgeorge06/atlaskb"
+$Repo = "TysonLabs/atlaskb"
 $GithubApi = "https://api.github.com"
 $GithubDl = "https://github.com"
 
@@ -141,8 +141,8 @@ Write-Host ""
 Write-Host "  atlaskb installer"
 Write-Host ""
 Write-Host "Scoop alternative:"
-Write-Host "  scoop bucket add atlaskb https://github.com/tgeorge06/scoop-atlaskb"
-Write-Host "  scoop install atlaskb"
+Write-Host "  scoop bucket add tysonlabs https://github.com/TysonLabs/scoop-bucket"
+Write-Host "  scoop install tysonlabs/atlaskb"
 Write-Host ""
 
 Get-ResolvedVersion | Out-Null

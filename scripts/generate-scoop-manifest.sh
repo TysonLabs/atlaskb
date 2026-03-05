@@ -11,7 +11,7 @@ Usage:
 Options:
   --version <version>    Version without leading v (required)
   --hash <sha256>        SHA256 hash for atlaskb-windows-x86_64.tar.gz (required)
-  --repo <owner/repo>    Source repository (default: tgeorge06/atlaskb)
+  --repo <owner/repo>    Source repository (default: TysonLabs/atlaskb)
   --output <path>        Output file (default: stdout)
   -h, --help             Show help
 EOF
@@ -19,7 +19,7 @@ EOF
 
 VERSION=""
 HASH=""
-REPO="tgeorge06/atlaskb"
+REPO="TysonLabs/atlaskb"
 OUTPUT=""
 
 while [[ $# -gt 0 ]]; do
