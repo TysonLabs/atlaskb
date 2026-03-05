@@ -138,11 +138,23 @@ jobs:
 
   update-scoop:
     needs: release
-    if: ${{ secrets.SCOOP_BUCKET_TOKEN != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source repository
         uses: actions/checkout@v4
+
+      - name: Detect Scoop token
+        id: scoop_token
+        env:
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${SCOOP_BUCKET_TOKEN}" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "SCOOP_BUCKET_TOKEN not configured; skipping scoop publish."
+          fi
 
       - name: Resolve metadata
         id: meta
@@ -159,6 +171,7 @@ jobs:
           echo "source_repo=${SOURCE_REPO}" >> "$GITHUB_OUTPUT"
 
       - name: Download Windows tarball
+        if: steps.scoop_token.outputs.enabled == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -171,11 +184,13 @@ jobs:
 
       - name: Compute SHA256
         id: hash
+        if: steps.scoop_token.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           echo "windows_x86_64=$(sha256sum assets/atlaskb-windows-x86_64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Generate Scoop manifest
+        if: steps.scoop_token.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           bash scripts/generate-scoop-manifest.sh \
@@ -185,6 +200,7 @@ jobs:
             --output /tmp/atlaskb.json
 
       - name: Checkout Scoop bucket
+        if: steps.scoop_token.outputs.enabled == 'true'
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.meta.outputs.bucket_repo }}
@@ -193,6 +209,7 @@ jobs:
           fetch-depth: 0
 
       - name: Commit and push Scoop update
+        if: steps.scoop_token.outputs.enabled == 'true'
         env:
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
