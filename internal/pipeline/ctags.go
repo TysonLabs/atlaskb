@@ -81,7 +81,7 @@ var methodScopeKinds = map[string]bool{
 
 // RunCtags executes Universal Ctags on the given repository path and returns
 // symbols grouped by relative file path. Returns nil, nil if ctags is not installed.
-func RunCtags(repoPath string) (map[string][]CtagsSymbol, error) {
+func RunCtags(repoPath string, excludes *ExclusionSet) (map[string][]CtagsSymbol, error) {
 	// Check if ctags is available
 	ctagsBin, err := exec.LookPath("ctags")
 	if err != nil {
@@ -93,11 +93,10 @@ func RunCtags(repoPath string) (map[string][]CtagsSymbol, error) {
 		return nil, fmt.Errorf("resolving path: %w", err)
 	}
 
-	// Run ctags with JSON output, all fields including scope
-	cmd := exec.Command(ctagsBin,
+	args := []string{
 		"--output-format=json",
 		"--fields=+nKS+l+S+t", // line number, Kind (full), Scope, language, Signature, typeref
-		"--extras=-F",       // no file-scope tags (reduces noise)
+		"--extras=-F",         // no file-scope tags (reduces noise)
 		"--recurse",
 		"--exclude=.git",
 		"--exclude=node_modules",
@@ -108,8 +107,16 @@ func RunCtags(repoPath string) (map[string][]CtagsSymbol, error) {
 		"--exclude=.mypy_cache",
 		"--exclude=target",
 		"--exclude=.myrmex",
-		absPath,
-	)
+	}
+	if excludes != nil {
+		for _, dir := range excludes.DirectoryExcludes() {
+			args = append(args, "--exclude="+dir)
+		}
+	}
+	args = append(args, absPath)
+
+	// Run ctags with JSON output, all fields including scope
+	cmd := exec.Command(ctagsBin, args...)
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -147,6 +154,9 @@ func RunCtags(repoPath string) (map[string][]CtagsSymbol, error) {
 		if err != nil {
 			relPath = entry.Path
 		}
+		if excludes != nil && excludes.ShouldExclude(relPath, false) {
+			continue
+		}
 
 		// Skip constants/variables in test files — these are almost always local
 		// test variables (e.g. `const result = ...` inside describe/it blocks)
@@ -154,8 +164,6 @@ func RunCtags(repoPath string) (map[string][]CtagsSymbol, error) {
 		if (entry.Kind == "constant" || entry.Kind == "variable") && isTestFile(relPath) {
 			continue
 		}
-
-
 
 		sym := CtagsSymbol{
 			Name:      entry.Name,

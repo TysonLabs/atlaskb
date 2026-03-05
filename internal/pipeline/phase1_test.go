@@ -19,7 +19,7 @@ func TestRunPhase1_MinimalGoProject(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "internal", "handler_test.go"), []byte("package internal\n\nfunc TestHandle(t *testing.T) {}\n"), 0644)
 	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0644)
 
-	manifest, err := RunPhase1(dir)
+	manifest, err := RunPhase1(dir, nil)
 	if err != nil {
 		t.Fatalf("RunPhase1() error = %v", err)
 	}
@@ -56,7 +56,7 @@ func TestRunPhase1_MinimalGoProject(t *testing.T) {
 func TestRunPhase1_EmptyDirectory(t *testing.T) {
 	dir := t.TempDir()
 
-	manifest, err := RunPhase1(dir)
+	manifest, err := RunPhase1(dir, nil)
 	if err != nil {
 		t.Fatalf("RunPhase1() error = %v", err)
 	}
@@ -76,7 +76,7 @@ func TestRunPhase1_VendorSkipped(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0644)
 	os.WriteFile(filepath.Join(dir, "vendor", "lib", "foo.go"), []byte("package lib\n"), 0644)
 
-	manifest, err := RunPhase1(dir)
+	manifest, err := RunPhase1(dir, nil)
 	if err != nil {
 		t.Fatalf("RunPhase1() error = %v", err)
 	}
@@ -97,7 +97,7 @@ func TestRunPhase1_NodeProject(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "src", "app.tsx"), []byte("export default function App() {}\n"), 0644)
 	os.WriteFile(filepath.Join(dir, "src", "server.js"), []byte("const express = require('express');\n"), 0644)
 
-	manifest, err := RunPhase1(dir)
+	manifest, err := RunPhase1(dir, nil)
 	if err != nil {
 		t.Fatalf("RunPhase1() error = %v", err)
 	}
@@ -118,5 +118,40 @@ func TestRunPhase1_NodeProject(t *testing.T) {
 	}
 	if !foundExpress {
 		t.Errorf("Frameworks = %v, want to contain 'Express'", manifest.Stack.Frameworks)
+	}
+}
+
+func TestRunPhase1_ExcludePatterns(t *testing.T) {
+	dir := t.TempDir()
+
+	os.MkdirAll(filepath.Join(dir, "internal", "generated"), 0o755)
+	os.MkdirAll(filepath.Join(dir, "fixtures"), 0o755)
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "internal", "generated", "gen.go"), []byte("package generated\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "fixtures", "seed.json"), []byte("{}\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "notes.tmp"), []byte("tmp\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, ".atlaskbignore"), []byte("*.tmp\nfixtures/\n"), 0o644)
+
+	excludes, err := BuildExclusionSet(dir, []string{"vendor"}, []string{"internal/generated"}, nil)
+	if err != nil {
+		t.Fatalf("BuildExclusionSet() error = %v", err)
+	}
+
+	manifest, err := RunPhase1(dir, excludes)
+	if err != nil {
+		t.Fatalf("RunPhase1() error = %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, fi := range manifest.Files {
+		seen[fi.Path] = true
+	}
+	if !seen["main.go"] {
+		t.Fatalf("main.go should be included")
+	}
+	for _, excluded := range []string{"internal/generated/gen.go", "fixtures/seed.json", "notes.tmp"} {
+		if seen[excluded] {
+			t.Fatalf("excluded file %s was still included in manifest", excluded)
+		}
 	}
 }

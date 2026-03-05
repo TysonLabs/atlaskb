@@ -11,10 +11,10 @@ import (
 )
 
 type Manifest struct {
-	RepoPath   string              `json:"repo_path"`
-	Files      []FileInfo          `json:"files"`
-	Stack      StackInfo           `json:"stack"`
-	Stats      ManifestStats       `json:"stats"`
+	RepoPath     string                   `json:"repo_path"`
+	Files        []FileInfo               `json:"files"`
+	Stack        StackInfo                `json:"stack"`
+	Stats        ManifestStats            `json:"stats"`
 	FilesByClass map[FileClass][]FileInfo `json:"files_by_class"`
 }
 
@@ -25,23 +25,17 @@ type StackInfo struct {
 }
 
 type ManifestStats struct {
-	TotalFiles      int   `json:"total_files"`
-	AnalyzableFiles int   `json:"analyzable_files"`
-	TotalBytes      int64 `json:"total_bytes"`
+	TotalFiles      int               `json:"total_files"`
+	AnalyzableFiles int               `json:"analyzable_files"`
+	TotalBytes      int64             `json:"total_bytes"`
 	ByClass         map[FileClass]int `json:"by_class"`
 	ByLanguage      map[string]int    `json:"by_language"`
 }
 
-func RunPhase1(repoPath string, excludeDirs ...[]string) (*Manifest, error) {
+func RunPhase1(repoPath string, excludes *ExclusionSet) (*Manifest, error) {
 	absPath, err := filepath.Abs(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving path: %w", err)
-	}
-
-	// Flatten the optional excludeDirs parameter
-	var excluded []string
-	if len(excludeDirs) > 0 && excludeDirs[0] != nil {
-		excluded = excludeDirs[0]
 	}
 
 	manifest := &Manifest{
@@ -57,15 +51,14 @@ func RunPhase1(repoPath string, excludeDirs ...[]string) (*Manifest, error) {
 	filePaths, gitErr := gitLsFiles(absPath)
 	if gitErr != nil {
 		// Not a git repo or git not available — fall back to WalkDir
-		filePaths, err = walkDirFiles(absPath, excluded)
+		filePaths, err = walkDirFiles(absPath, excludes)
 		if err != nil {
 			return nil, fmt.Errorf("walking directory: %w", err)
 		}
 	}
 
 	for _, relPath := range filePaths {
-		// Apply exclude dirs filter
-		if matchesExcludeDir(relPath, excluded) {
+		if excludes != nil && excludes.ShouldExclude(relPath, false) {
 			continue
 		}
 
@@ -221,7 +214,7 @@ func gitLsFiles(repoPath string) ([]string, error) {
 
 // walkDirFiles is the fallback for non-git repos. Uses filepath.WalkDir
 // with hardcoded directory exclusions.
-func walkDirFiles(absPath string, excluded []string) ([]string, error) {
+func walkDirFiles(absPath string, excludes *ExclusionSet) ([]string, error) {
 	var files []string
 	err := filepath.WalkDir(absPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -235,7 +228,7 @@ func walkDirFiles(absPath string, excluded []string) ([]string, error) {
 			if vendorDirs[strings.ToLower(base)] {
 				return filepath.SkipDir
 			}
-			if matchesExcludeDir(mustRel(absPath, path), excluded) {
+			if excludes != nil && excludes.ShouldExclude(mustRel(absPath, path), true) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -248,15 +241,6 @@ func walkDirFiles(absPath string, excluded []string) ([]string, error) {
 		return nil
 	})
 	return files, err
-}
-
-func matchesExcludeDir(relPath string, excluded []string) bool {
-	for _, ex := range excluded {
-		if relPath == ex || strings.HasPrefix(relPath, ex+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 func mustRel(base, path string) string {

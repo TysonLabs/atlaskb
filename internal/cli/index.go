@@ -21,6 +21,7 @@ var (
 	indexYes         bool
 	indexConcurrency int
 	indexPhases      []string
+	indexExcludes    []string
 )
 
 var indexCmd = &cobra.Command{
@@ -37,6 +38,7 @@ func init() {
 	indexCmd.Flags().BoolVarP(&indexYes, "yes", "y", false, "skip confirmation prompts")
 	indexCmd.Flags().IntVar(&indexConcurrency, "concurrency", 0, "number of parallel LLM calls (default from config)")
 	indexCmd.Flags().StringSliceVar(&indexPhases, "phase", nil, "run only specific phases (phase1, phase2, backfill, gitlog, phase3, phase4, phase5, embedding)")
+	indexCmd.Flags().StringSliceVar(&indexExcludes, "exclude", nil, "exclude path/pattern (repeatable, highest precedence)")
 	rootCmd.AddCommand(indexCmd)
 }
 
@@ -141,6 +143,7 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		GitLogLimit:       cfg.Pipeline.GitLogLimit,
 		Phases:            indexPhases,
 		GlobalExcludeDirs: cfg.Pipeline.GlobalExcludeDirs,
+		CLIExcludes:       indexExcludes,
 		GitHubClient:      ghClient,
 		GitHubMaxPRs:      cfg.GitHub.MaxPRs,
 		GitHubPRBatchSize: cfg.GitHub.PRBatchSize,
