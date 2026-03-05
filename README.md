@@ -301,6 +301,9 @@ Flags:
 - `-y, --yes`: skip prompts
 - `--concurrency <n>`: override configured concurrency
 - `--phase <name>`: run partial phases
+- `--exclude <pattern>`: exclude path/pattern (repeatable, highest precedence)
+
+AtlasKB also reads `.atlaskbignore` from the repo root using gitignore-style patterns.
 
 Examples:
 
@@ -309,6 +312,7 @@ atlaskb index ~/src/repo
 atlaskb index ~/src/repo --force
 atlaskb index ~/src/repo --dry-run
 atlaskb index ~/src/repo --phase phase2 --phase backfill
+atlaskb index ~/src/repo --exclude generated --exclude '**/*.snap'
 ```
 
 ### `atlaskb ask [question]`
@@ -322,7 +326,7 @@ Flags:
 
 ### `atlaskb status [repo-name]`
 
-Show indexing health, job counts, recent run metrics, quality trend.
+Show indexing health, staleness/revalidation backlog, and recent run metrics.
 
 Supports `--json` global flag.
 
@@ -479,6 +483,7 @@ This enables both direct fact retrieval and graph-traversal oriented answers.
 - `get_repo_overview`
 - `search_entities`
 - `get_entity_source`
+- `submit_fact_feedback`
 
 `get_task_context` is the best default tool for coding-agent task bootstrap because it bundles conventions, context, contracts, and decision history.
 
@@ -489,6 +494,7 @@ Base path: `/api`
 ### Health and stats
 
 - `GET /api/health`
+- `GET /api/metrics`
 - `GET /api/stats`
 - `GET /api/stats/recent-runs`
 
@@ -539,6 +545,9 @@ Base path: `/api`
 
 - `POST /api/ask`
 - `GET /api/search`
+- `GET /api/feedback`
+- `POST /api/feedback`
+- `POST /api/feedback/{id}/resolve`
 - `GET /api/chats`
 - `POST /api/chats`
 - `GET /api/chats/{id}`
@@ -549,6 +558,8 @@ Base path: `/api`
 ### File access
 
 - `GET /api/file`
+
+Heavy GET endpoints (`/api/search`, `/api/repos`, `/api/repos/{id}`, `/api/stats`, `/api/stats/recent-runs`) support conditional caching with `ETag`/`If-None-Match`.
 
 ## Homebrew Tap and Release Automation
 
@@ -592,6 +603,8 @@ make test          # go test ./... -v
 make lint          # golangci-lint
 make clean
 ```
+
+Contract drift checks run in CI via [`.github/workflows/contracts.yml`](.github/workflows/contracts.yml) and validate CLI command/flag surface plus MCP tool names.
 
 ### Frontend dev
 
@@ -696,13 +709,8 @@ scripts/                  release and utility scripts
 
 ## Additional Docs
 
-- [Architecture Overview](docs/architecture-overview.md)
-- [Extraction Pipeline](docs/extraction-pipeline.md)
-- [Knowledge Model](docs/knowledge-model.md)
-- [Retrieval Layer](docs/retrieval-layer.md)
-- [Tech Stack](docs/tech-stack.md)
-- [Decisions](docs/decisions.md)
-- [Private Homebrew Tap](docs/homebrew-private-tap.md)
+- [Implementation Gap Report](docs/IMPLEMENTATION-GAP-REPORT.md)
+- [Operations Runbook](docs/OPERATIONS-RUNBOOK.md)
 
 ## License
 

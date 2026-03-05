@@ -9,15 +9,20 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/tgeorge06/atlaskb/internal/models"
+	"github.com/tgeorge06/atlaskb/internal/pipeline"
 )
 
 type repoListItem struct {
 	models.Repo
-	EntityCount      int      `json:"entity_count"`
-	FactCount        int      `json:"fact_count"`
-	RelCount         int      `json:"relationship_count"`
-	DecisionCount    int      `json:"decision_count"`
-	QualityOverall   *float64 `json:"quality_overall,omitempty"`
+	EntityCount       int      `json:"entity_count"`
+	FactCount         int      `json:"fact_count"`
+	RelCount          int      `json:"relationship_count"`
+	DecisionCount     int      `json:"decision_count"`
+	QualityOverall    *float64 `json:"quality_overall,omitempty"`
+	EffectiveExcludes []string `json:"effective_excludes,omitempty"`
+	Stale             bool     `json:"stale"`
+	StaleReasons      []string `json:"stale_reasons,omitempty"`
+	CommitsBehind     *int     `json:"commits_behind,omitempty"`
 }
 
 func (s *Server) handleListRepos(w http.ResponseWriter, r *http.Request) {
@@ -54,27 +59,38 @@ func (s *Server) handleListRepos(w http.ResponseWriter, r *http.Request) {
 		if err == nil && latest != nil {
 			item.QualityOverall = latest.QualityOverall
 		}
+		if excludes, err := pipeline.BuildExclusionSet(repo.LocalPath, s.cfg.Pipeline.GlobalExcludeDirs, repo.ExcludeDirs, nil); err == nil {
+			item.EffectiveExcludes = excludes.Effective
+		}
+		staleness := models.ComputeRepoStaleness(r.Context(), repo)
+		item.Stale = staleness.Stale
+		item.StaleReasons = staleness.Reasons
+		item.CommitsBehind = staleness.CommitsBehind
 
 		items = append(items, item)
 	}
 
-	writeJSON(w, http.StatusOK, items)
+	writeJSONWithETag(w, r, http.StatusOK, items)
 }
 
 type repoDetailResponse struct {
 	models.Repo
-	EntityCount      int            `json:"entity_count"`
-	EntityByKind     map[string]int `json:"entity_by_kind"`
-	FactCount        int            `json:"fact_count"`
-	FactByDimension  map[string]int `json:"fact_by_dimension"`
-	RelCount         int            `json:"relationship_count"`
-	DecisionCount    int            `json:"decision_count"`
-	QualityOverall   *float64       `json:"quality_overall,omitempty"`
-	QualityEntityCov *float64       `json:"quality_entity_cov,omitempty"`
-	QualityFactDens  *float64       `json:"quality_fact_density,omitempty"`
-	QualityRelConn   *float64       `json:"quality_rel_connect,omitempty"`
-	QualityDimCov    *float64       `json:"quality_dim_coverage,omitempty"`
-	QualityParseRate *float64       `json:"quality_parse_rate,omitempty"`
+	EntityCount       int            `json:"entity_count"`
+	EntityByKind      map[string]int `json:"entity_by_kind"`
+	FactCount         int            `json:"fact_count"`
+	FactByDimension   map[string]int `json:"fact_by_dimension"`
+	RelCount          int            `json:"relationship_count"`
+	DecisionCount     int            `json:"decision_count"`
+	QualityOverall    *float64       `json:"quality_overall,omitempty"`
+	QualityEntityCov  *float64       `json:"quality_entity_cov,omitempty"`
+	QualityFactDens   *float64       `json:"quality_fact_density,omitempty"`
+	QualityRelConn    *float64       `json:"quality_rel_connect,omitempty"`
+	QualityDimCov     *float64       `json:"quality_dim_coverage,omitempty"`
+	QualityParseRate  *float64       `json:"quality_parse_rate,omitempty"`
+	EffectiveExcludes []string       `json:"effective_excludes,omitempty"`
+	Stale             bool           `json:"stale"`
+	StaleReasons      []string       `json:"stale_reasons,omitempty"`
+	CommitsBehind     *int           `json:"commits_behind,omitempty"`
 }
 
 func (s *Server) handleGetRepo(w http.ResponseWriter, r *http.Request) {
@@ -126,8 +142,15 @@ func (s *Server) handleGetRepo(w http.ResponseWriter, r *http.Request) {
 		resp.QualityDimCov = latest.QualityDimCoverage
 		resp.QualityParseRate = latest.QualityParseRate
 	}
+	if excludes, err := pipeline.BuildExclusionSet(repo.LocalPath, s.cfg.Pipeline.GlobalExcludeDirs, repo.ExcludeDirs, nil); err == nil {
+		resp.EffectiveExcludes = excludes.Effective
+	}
+	staleness := models.ComputeRepoStaleness(r.Context(), *repo)
+	resp.Stale = staleness.Stale
+	resp.StaleReasons = staleness.Reasons
+	resp.CommitsBehind = staleness.CommitsBehind
 
-	writeJSON(w, http.StatusOK, resp)
+	writeJSONWithETag(w, r, http.StatusOK, resp)
 }
 
 func (s *Server) handleRepoIndexingRuns(w http.ResponseWriter, r *http.Request) {

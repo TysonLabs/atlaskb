@@ -7,11 +7,13 @@ import (
 )
 
 type statsResponse struct {
-	Repos         int `json:"repos"`
-	Entities      int `json:"entities"`
-	Facts         int `json:"facts"`
-	Relationships int `json:"relationships"`
-	Decisions     int `json:"decisions"`
+	Repos               int `json:"repos"`
+	Entities            int `json:"entities"`
+	Facts               int `json:"facts"`
+	Relationships       int `json:"relationships"`
+	Decisions           int `json:"decisions"`
+	StaleRepos          int `json:"stale_repos"`
+	RevalidationBacklog int `json:"revalidation_backlog"`
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -28,7 +30,23 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		writeError(w, NewInternal("querying stats: "+err.Error()))
 		return
 	}
-	writeJSON(w, http.StatusOK, stats)
+
+	repoStore := &models.RepoStore{Pool: s.pool}
+	repos, err := repoStore.List(r.Context())
+	if err == nil {
+		for _, repo := range repos {
+			if models.ComputeRepoStaleness(r.Context(), repo).Stale {
+				stats.StaleRepos++
+			}
+		}
+	}
+	err = s.pool.QueryRow(r.Context(),
+		`SELECT COUNT(*) FROM extraction_jobs WHERE status IN ('pending', 'failed')`,
+	).Scan(&stats.RevalidationBacklog)
+	if err != nil {
+		stats.RevalidationBacklog = 0
+	}
+	writeJSONWithETag(w, r, http.StatusOK, stats)
 }
 
 type recentRunResponse struct {
@@ -40,7 +58,7 @@ func (s *Server) handleRecentRuns(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.pool.Query(r.Context(),
 		`SELECT ir.id, ir.repo_id, ir.commit_sha, ir.mode, ir.model_extraction, ir.model_synthesis, ir.concurrency,
 			ir.files_total, ir.files_analyzed, ir.files_skipped,
-			ir.entities_created, ir.facts_created, ir.rels_created, ir.decisions_created,
+			ir.entities_created, ir.facts_created, ir.rels_created, ir.decisions_created, ir.parse_fallbacks, ir.unresolved_refs,
 			ir.orphan_entities, ir.backfill_facts, ir.backfill_rels,
 			ir.total_tokens, ir.total_cost_usd,
 			ir.quality_overall, ir.quality_entity_cov, ir.quality_fact_density,
@@ -63,7 +81,7 @@ func (s *Server) handleRecentRuns(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(
 			&rr.ID, &rr.RepoID, &rr.CommitSHA, &rr.Mode, &rr.ModelExtraction, &rr.ModelSynthesis, &rr.Concurrency,
 			&rr.FilesTotal, &rr.FilesAnalyzed, &rr.FilesSkipped,
-			&rr.EntitiesCreated, &rr.FactsCreated, &rr.RelsCreated, &rr.DecisionsCreated,
+			&rr.EntitiesCreated, &rr.FactsCreated, &rr.RelsCreated, &rr.DecisionsCreated, &rr.ParseFallbacks, &rr.UnresolvedRefs,
 			&rr.OrphanEntities, &rr.BackfillFacts, &rr.BackfillRels,
 			&rr.TotalTokens, &rr.TotalCostUSD,
 			&rr.QualityOverall, &rr.QualityEntityCov, &rr.QualityFactDensity,
@@ -79,5 +97,5 @@ func (s *Server) handleRecentRuns(w http.ResponseWriter, r *http.Request) {
 	if runs == nil {
 		runs = []recentRunResponse{}
 	}
-	writeJSON(w, http.StatusOK, runs)
+	writeJSONWithETag(w, r, http.StatusOK, runs)
 }

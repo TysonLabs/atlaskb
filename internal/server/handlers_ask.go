@@ -128,7 +128,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if results == nil {
 		results = []query.SearchResult{}
 	}
-	writeJSON(w, http.StatusOK, results)
+	writeJSONWithETag(w, r, http.StatusOK, results)
 }
 
 // resolveRepoIDs merges repo_id, repo_ids, and repo_name into a deduplicated []uuid.UUID.
