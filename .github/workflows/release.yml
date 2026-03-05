@@ -66,17 +66,25 @@ jobs:
           npm ci --prefix web
           npm run build --prefix web
 
-      - name: Build binary
+      - name: Build binary (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist pkg
           VERSION="${GITHUB_REF_NAME#v}"
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            export CC="C:/msys64/mingw64/bin/gcc.exe"
-            export CXX="C:/msys64/mingw64/bin/g++.exe"
-          fi
           GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" CGO_ENABLED="${{ matrix.cgo_enabled }}" \
+            go build -ldflags "-s -w -X github.com/tgeorge06/atlaskb/internal/version.Version=${VERSION}" -o "dist/atlaskb${{ matrix.ext }}" ./cmd/atlaskb
+
+      - name: Build binary (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mkdir -p dist pkg
+          VERSION="${GITHUB_REF_NAME#v}"
+          GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" CGO_ENABLED="${{ matrix.cgo_enabled }}" \
+            CC="gcc" CXX="g++" \
             go build -ldflags "-s -w -X github.com/tgeorge06/atlaskb/internal/version.Version=${VERSION}" -o "dist/atlaskb${{ matrix.ext }}" ./cmd/atlaskb
 
       - name: Package (Unix)
