@@ -138,6 +138,7 @@ jobs:
 
   update-scoop:
     needs: release
+    if: ${{ secrets.SCOOP_BUCKET_TOKEN != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source repository
