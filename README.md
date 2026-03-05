@@ -12,6 +12,8 @@ It indexes repositories into a structured graph (entities, facts, decisions, rel
 
 - [What AtlasKB Does](#what-atlaskb-does)
 - [Architecture](#architecture)
+- [Implementation Status](#implementation-status)
+- [Current Limitations](#current-limitations)
 - [Requirements](#requirements)
 - [Install](#install)
 - [Quick Start](#quick-start)
@@ -73,6 +75,23 @@ Runtime modes:
 - `atlaskb` (default): starts combined runtime (dashboard + MCP HTTP)
 - `atlaskb serve`: same runtime explicitly
 - `atlaskb mcp`: stdio MCP server for clients that require stdio transport
+
+## Implementation Status
+
+As of `2026-03-05`, backlog status is:
+
+- Implemented: contract checks, feedback lifecycle, observability baseline, exclusion controls, ETag caching
+- Partial: staleness/revalidation policy depth, parser quality guardrails
+- Not implemented yet: API/MCP authz baseline, webhook/polling ingestion worker, managed clone/discovery lifecycle, retrieval eval harness, security hardening, packaging beyond Homebrew
+
+Detailed evidence and sequencing: [`docs/IMPLEMENTATION-GAP-REPORT.md`](docs/IMPLEMENTATION-GAP-REPORT.md)
+
+## Current Limitations
+
+- API and MCP HTTP currently do not enforce built-in authentication/authorization boundaries.
+- Treat runtime endpoints as trusted local/dev infrastructure unless protected by network or reverse-proxy auth.
+- Repository onboarding requires an existing local git checkout path.
+- Incremental ingestion is currently manual (`atlaskb index` or reindex endpoints), not webhook-driven.
 
 ## Requirements
 
@@ -490,6 +509,11 @@ This enables both direct fact retrieval and graph-traversal oriented answers.
 ## REST API Surface
 
 Base path: `/api`
+
+Security note:
+
+- No auth middleware is enabled by default for API/MCP HTTP routes.
+- For shared environments, place AtlasKB behind a trusted network boundary or proxy auth.
 
 ### Health and stats
 
