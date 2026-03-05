@@ -18,26 +18,31 @@ jobs:
             ext: ""
             goos: linux
             goarch: amd64
+            cgo_enabled: "0"
           - os: ubuntu-22.04
             artifact: atlaskb-linux-aarch64
             ext: ""
             goos: linux
             goarch: arm64
+            cgo_enabled: "0"
           - os: macos-13
             artifact: atlaskb-macos-x86_64
             ext: ""
             goos: darwin
             goarch: amd64
+            cgo_enabled: "0"
           - os: macos-14
             artifact: atlaskb-macos-aarch64
             ext: ""
             goos: darwin
             goarch: arm64
+            cgo_enabled: "0"
           - os: windows-latest
             artifact: atlaskb-windows-x86_64
             ext: ".exe"
             goos: windows
             goarch: amd64
+            cgo_enabled: "1"
 
     runs-on: ${{ matrix.os }}
 
@@ -58,6 +63,14 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      - name: Setup MSYS2 (Windows CGO toolchain)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc
+
       - name: Build frontend assets
         run: |
           set -euo pipefail
@@ -70,7 +83,11 @@ jobs:
           set -euo pipefail
           mkdir -p dist pkg
           VERSION="${GITHUB_REF_NAME#v}"
-          GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" CGO_ENABLED=0 \
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            export CC="C:/msys64/mingw64/bin/gcc.exe"
+            export CXX="C:/msys64/mingw64/bin/g++.exe"
+          fi
+          GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" CGO_ENABLED="${{ matrix.cgo_enabled }}" \
             go build -ldflags "-s -w -X github.com/tgeorge06/atlaskb/internal/version.Version=${VERSION}" -o "dist/atlaskb${{ matrix.ext }}" ./cmd/atlaskb
 
       - name: Package (Unix)
