@@ -17,6 +17,7 @@ It indexes repositories into a structured graph (entities, facts, decisions, rel
 - [Requirements](#requirements)
 - [Install](#install)
 - [Quick Start](#quick-start)
+- [Docker Quick Start](#docker-quick-start)
 - [Using Runtime and CLI Together](#using-runtime-and-cli-together)
 - [Configuration](#configuration)
 - [CLI Reference](#cli-reference)
@@ -148,6 +149,26 @@ make build-full
 
 `make build-full` builds web assets first, then the Go binary.
 
+### Option C: Docker Compose (Fast Local Bring-Up)
+
+```bash
+docker compose up --build
+```
+
+This starts:
+
+- `atlaskb` runtime on `http://localhost:3000`
+- PostgreSQL + pgvector as `db` service
+
+Default container LLM/embedding endpoint is `http://host.docker.internal:1234`.
+Override as needed:
+
+```bash
+ATLASKB_LLM_URL=http://host.docker.internal:11434 \
+ATLASKB_EMBEDDINGS_URL=http://host.docker.internal:11434 \
+docker compose up --build
+```
+
 ## Quick Start
 
 1. Run setup wizard:
@@ -187,6 +208,33 @@ atlaskb ask "Where are retries implemented?" --repo my-service
 ```bash
 atlaskb status
 atlaskb repos
+```
+
+## Docker Quick Start
+
+Start stack:
+
+```bash
+docker compose up --build
+```
+
+Run one-off commands in the app container:
+
+```bash
+docker compose exec atlaskb atlaskb version
+docker compose exec atlaskb atlaskb status
+```
+
+Stop stack:
+
+```bash
+docker compose down
+```
+
+Reset DB volume:
+
+```bash
+docker compose down -v
 ```
 
 ## Using Runtime and CLI Together
@@ -715,6 +763,18 @@ brew services restart atlaskb
 - `POST <embeddings_base_url>/v1/embeddings`
 
 Ensure both endpoints are reachable and model IDs are valid.
+
+### Docker cannot reach host LLM endpoint
+
+Compose defaults LLM/embeddings URL to `http://host.docker.internal:1234`.
+
+If your host uses another endpoint, set:
+
+```bash
+ATLASKB_LLM_URL=http://host.docker.internal:<port> \
+ATLASKB_EMBEDDINGS_URL=http://host.docker.internal:<port> \
+docker compose up --build
+```
 
 ## Repository Layout
 

@@ -1,0 +1,10 @@
+.git
+.github
+.atlaskb
+bin
+atlaskb
+node_modules
+web/node_modules
+web/dist
+*.log
+*.tmp
